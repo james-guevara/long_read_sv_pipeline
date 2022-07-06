@@ -143,6 +143,55 @@ process HAPLOTAG {
 }
 
 
+process CUTESV {
+    input:
+    tuple val(sample_name), path(bam) 
+    output:
+    tuple val(sample_name), path("${bam.simpleName}.mm2.cutesv.s1.vcf")
+
+    script:
+    """
+    mkdir work_folder
+    cuteSV -t ${task.cpus} --max_cluster_bias_INS 1000 --diff_ratio_merging_INS 0.9 --max_cluster_bias_DEL 1000 --diff_ratio_merging_DEL 0.9 --report_readid --min_support 1 --genotype $bam $reference_fasta ${bam.simpleName}.mm2.cutesv.s1.vcf work_folder 
+    """
+
+    stub:
+    """
+    touch ${bam.simpleName}.mm2.cutesv.s1.vcf
+    """
+}
+
+process CORRECT_CUTESV {
+    input:
+    tuple val(sample_name), path(vcf)
+    output:
+    tuple val(sample_name), path("${vcf.simpleName}.mm2.cutesv.s1.fixed.vcf.gz")
+
+    script:
+    """
+    bcftools view --include 'POS>0' $vcf | bcftools sort --output-type z --output ${vcf.simpleName}.mm2.cutesv.s1.fixed.vcf.gz
+    """    
+}
+
+process SNIFFLES {
+    input:
+    tuple val(sample_name), path(bam) 
+ 
+    output:
+    tuple val(sample_name), path("${map_sort_bam_sniffles.simpleName}.mm2.sniffles.s1.vcf")
+ 
+    script:
+    """
+    sniffles -t ${task.cpus} --num_reads_report -1 --tmp_file tmp1 --min_support 1 --cluster -m $map_sort_bam_sniffles \
+      -v ${map_sort_bam_sniffles.simpleName}.mm2.sniffles.s1.vcf
+    """
+
+    stub:
+    """
+    touch ${map_sort_bam_sniffles.simpleName}.mm2.sniffles.s1.vcf
+    """
+}
+
 def make_pedigree_dictionary (pedigree_filepath) {
     pedigree_table = new File(pedigree_filepath).readLines().collect{ it.tokenize("\t") }
     pedigree_dictionary = [:]
