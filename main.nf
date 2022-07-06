@@ -185,7 +185,7 @@ workflow {
 
     large_family_trios = large_family_samples.father.join(large_family_samples.mother).combine(large_family_samples.child, by: 0).map { it -> tuple( it[0], [ it[1], it[4], it[7] ], [ it[2], it[5], it[8] ], [ it[3], it[6], it[9] ] ) }
 
-    // Now we can run the phasing on all types of family structure
+    // Run the phasing on all types of family structure
     subsetted_family_tuples = SUBSET_VCF(large_family_trios.mix(families_to_be_phased.standard_family), joint_called_vcf)
     phased_family_tuples = PHASE(subsetted_family_tuples)
     phased_family_tuples
@@ -197,36 +197,8 @@ workflow {
                         .set { families_to_merge_and_standard_families }
     merged_families = MERGE_FAMILY_VCFS(families_to_merge_and_standard_families.families_to_merge)
     all_phased_families_tuple = families_to_merge_and_standard_families.standard_families.transpose().mix(merged_families)
+
     // Haplotag each sample's bam file using its phased family VCF
     haplotag_bam_tuple = HAPLOTAG(sample_bam_tuple.combine(all_phased_families_tuple, by: 0))
-    haplotag_bam_tuple.view()
 
-    // // Five member families
-    // families_to_be_phased.five_member_family
-    //                                         .transpose()
-    //                                         .branch {
-    //                                             father: pedigree_dictionary[it[1]] == "Father"
-    //                                             mother: pedigree_dictionary[it[1]] == "Mother"
-    //                                             child: true
-    //                                         }
-    //                                         .set { five_member_family_samples }
-    // five_member_family_trios = five_member_family_samples.father.join(five_member_family_samples.mother).combine(five_member_family_samples.child, by: 0).map { it -> tuple( it[0], [ it[1], it[4], it[7] ], [ it[2], it[5], it[8] ], [ it[3], it[6], it[9] ] ) }
-
-
-    // // Now we can run the phasing on all types of family structure
-    // subsetted_family_tuples = SUBSET_VCF(five_member_family_trios.mix(families_to_be_phased.standard_family), joint_called_vcf)
-    // phased_family_tuples = PHASE(subsetted_family_tuples)
-    // phased_family_tuples
-    //                     .groupTuple()
-    //                     .branch {
-    //                             families_to_merge: it[1].size() > 1 
-    //                             standard_families: true
-    //                     }
-    //                     .set { families_to_merge_and_standard_families }
-    // merged_families = MERGE_FAMILY_VCFS(families_to_merge_and_standard_families.families_to_merge)
-
-    // all_phased_families_tuple = families_to_merge_and_standard_families.standard_families.transpose().mix(merged_families)
-
-    // // Haplotag each sample's bam file using its phased family VCF
-    // haplotag_bam_tuple = HAPLOTAG(sample_bam_tuple.combine(all_phased_families_tuple, by: 0))
 }
