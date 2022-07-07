@@ -154,43 +154,144 @@ process CUTESV {
     mkdir work_folder
     cuteSV -t ${task.cpus} --max_cluster_bias_INS 1000 --diff_ratio_merging_INS 0.9 --max_cluster_bias_DEL 1000 --diff_ratio_merging_DEL 0.9 --report_readid --min_support 1 --genotype $bam $reference_fasta ${bam.simpleName}.mm2.cutesv.s1.vcf work_folder 
     """
-
     stub:
     """
     touch ${bam.simpleName}.mm2.cutesv.s1.vcf
     """
 }
 
-process CORRECT_CUTESV {
+process POSTPROCESS_CUTESV {
     input:
     tuple val(sample_name), path(vcf)
     output:
-    tuple val(sample_name), path("${vcf.simpleName}.mm2.cutesv.s1.fixed.vcf.gz")
+    tuple val(sample_name), path("${vcf.simpleName}.mm2.cutesv.s1.vcf.gz")
 
     script:
     """
     bcftools view --include 'POS>0' $vcf | bcftools sort --output-type z --output ${vcf.simpleName}.mm2.cutesv.s1.fixed.vcf.gz
-    """    
+    """
+    stub:
+    """
+    touch ${vcf.simpleName}.mm2.cutesv.s1.vcf.gz
+    """
 }
 
 process SNIFFLES {
     input:
     tuple val(sample_name), path(bam) 
- 
     output:
-    tuple val(sample_name), path("${map_sort_bam_sniffles.simpleName}.mm2.sniffles.s1.vcf")
+    tuple val(sample_name), path("${bam.simpleName}.mm2.sniffles.s1.vcf")
  
     script:
     """
-    sniffles -t ${task.cpus} --num_reads_report -1 --tmp_file tmp1 --min_support 1 --cluster -m $map_sort_bam_sniffles \
-      -v ${map_sort_bam_sniffles.simpleName}.mm2.sniffles.s1.vcf
+    sniffles -t ${task.cpus} --num_reads_report -1 --tmp_file tmp1 --min_support 1 --cluster -m $map_sort_bam_sniffles -v ${map_sort_bam_sniffles.simpleName}.mm2.sniffles.s1.vcf
     """
 
     stub:
     """
-    touch ${map_sort_bam_sniffles.simpleName}.mm2.sniffles.s1.vcf
+    touch ${bam.simpleName}.mm2.sniffles.s1.vcf
     """
 }
+
+process POSTPROCESS_SNIFFLES {
+    input:
+    tuple val(sample_name), path(vcf)
+
+    output:
+    tuple val(sample_name), path("${vcf.simpleName}.mm2.sniffles.s1.vcf.gz")
+
+    script:
+    """
+    bash postprocess_sniffles.sh $vcf
+    """
+
+    stub:
+    """
+    touch ${vcf.simpleName}.mm2.sniffles.s1.vcf.gz
+    """
+}
+
+
+process SVIM {
+    input:
+    tuple val(sample_name), path(bam)
+
+    output:
+    tuple val(sample_name), path("${bam.simpleName}.mm2.svim.vcf")
+
+    script:
+    """
+    svim alignment --read_names --zmws out_svim/  $map_sort_bam_svim $reference_fasta
+    mv out_svim/variants.vcf ${bam.simpleName}.mm2.svim.vcf
+    """
+    stub:
+    """
+    touch ${bam.simpleName}.mm2.svim.vcf
+    """
+}
+
+process POSTPROCESS_SVIM {
+    input:
+    tuple val(sample_name), path(vcf)
+
+    output:
+    tuple val(sample_name), path("${vcf.simpleName}.mm2.svim.s1.vcf.gz")
+
+    script:
+    """
+    bash postprocess_svim.sh $vcf
+    """
+    stub:
+    """
+    touch ${vcf.simpleName}.mm2.svim.s1.vcf.gz
+    """
+}
+
+process JASMINE {
+    input:
+    tuple val(sample_name), path(bam), path(bai), path(cutesv_vcf), path(sniffles_vcf), path(svim_vcf)
+
+    output:
+    tuple val(sample_name), path("${sample_name}_jasmine_iris.vcf")
+
+    script:
+    """
+    echo $cutesv_vcf    > vcf_paths.txt
+    echo $sniffles_vcf >> vcf_paths.txt
+    echo $svim_vcf     >> vcf_paths.txt
+    VCF_FILE_LIST=vcf_paths.txt
+
+    echo $bam > bam_path.txt
+    BAM_FILE_LIST=bam_path.txt
+
+    jasmine file_list=\$VCF_FILE_LIST out_file=${sample_name}_jasmine_iris.vcf genome_file=$reference_fasta bam_list=\$BAM_FILE_LIST out_dir=. --output_genotypes --dup_to_ins --normalize_type --ignore_strand threads=${task.cpus} --run_iris iris_args=--keep_long_variants,threads=${task.cpus}
+    """
+
+    stub:
+    """
+    touch ${sample_name}_jasmine_iris.vcf
+    """
+}
+
+process POSTPROCESS_JASMINE {
+    input:
+    tuple val(sample_name), path(jasmine_vcf), path(cutesv_vcf), path(sniffles_vcf), path(svim_vcf)
+    
+    output:
+    tuple val(sample_name), path("${jasmine_vcf.simpleName}.s1.vcf.gz"), path("${jasmine_vcf.simpleName}.s1.vcf.gz.tbi")
+
+    script:
+    """
+    bash postprocess_jasmine.sh $jasmine_vcf $cutesv_vcf $sniffles_vcf $svim_vcf
+    """
+
+    stub:
+    """
+    touch ${jasmine_vcf.simpleName}.s1.vcf.gz
+    touch ${jasmine_vcf.simpleName}.s1.vcf.gz.tbi
+    """
+}
+
 
 def make_pedigree_dictionary (pedigree_filepath) {
     pedigree_table = new File(pedigree_filepath).readLines().collect{ it.tokenize("\t") }
