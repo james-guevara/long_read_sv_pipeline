@@ -11,7 +11,7 @@ ped = Channel
 
 // The data channel will output tuples, each of which contains a sample ID, the path to the sample's input bam file, and the sample's family ID.
 sample_fastq_tuple = Channel
-            .fromPath("ont_fastqs.tsv", type: "file", checkIfExists: true)
+            .fromPath("ont_fastqs_test.tsv", type: "file", checkIfExists: true)
             .splitCsv(sep: "\t", header: ["sample_id", "reads_file"])
             .map { row -> tuple(row.sample_id, row.reads_file) }
             .join(ped)
@@ -52,7 +52,7 @@ process ADD_READGROUP {
     input:
     tuple val(family_id), val(sample_id), path(bam)
     output:
-    tuple val(family_id), val(sample_id), path("${sample_id}.bam")
+    tuple val(family_id), val(sample_id), path("${sample_id}.RG.bam")
     script:
     """
     samtools addreplacerg -r "@RG\tID:$sample_id\tSM:$sample_id" -o ${sample_id}.RG.bam $bam
@@ -238,7 +238,7 @@ process POSTPROCESS_SVIM {
 
 process JASMINE {
     input:
-    tuple val(sample_name), path(bam), path(bai), path(cutesv_vcf), path(sniffles_vcf), path(svim_vcf)
+    tuple val(sample_name), path(bam), path(cutesv_vcf), path(sniffles_vcf), path(svim_vcf)
     output:
     tuple val(sample_name), path("${sample_name}_jasmine_iris.vcf"), path(cutesv_vcf), path(sniffles_vcf), path(svim_vcf)
     script:
@@ -335,14 +335,11 @@ workflow {
     // Haplotag each sample's bam file using its phased family VCF
     haplotag_bam_tuple = HAPLOTAG(sample_bam_tuple.combine(all_phased_families_tuple, by: 0))
 
-    // Run variant callers
+    // // Run variant callers
     cutesv_tuple = POSTPROCESS_CUTESV(CUTESV(haplotag_bam_tuple))
     sniffles_tuple = POSTPROCESS_SNIFFLES(SNIFFLES(haplotag_bam_tuple))
     svim_tuple = POSTPROCESS_SVIM(SVIM(haplotag_bam_tuple))
 
-    // Merge variant callers (within each sample) using Jasmine
-    jasmine_tuple = POSTPROCESS_JASMINE(JASMINE(cutesv_tuple.join(sniffles_tuple).join(svim_tuple)))
+    // // Merge variant callers (within each sample) using Jasmine
+    jasmine_tuple = POSTPROCESS_JASMINE(JASMINE(haplotag_bam_tuple.join(cutesv_tuple).join(sniffles_tuple).join(svim_tuple)))
 }
-
-
-
