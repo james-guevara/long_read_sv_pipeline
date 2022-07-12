@@ -179,26 +179,27 @@ process POSTPROCESS_CUTESV {
     input:
     tuple val(sample_name), path(vcf)
     output:
-    tuple val(sample_name), path("${vcf.simpleName}.mm2.cutesv.s1.vcf.gz")
+    tuple val(sample_name), path("${sample_name}.cutesv.vcf")
     script:
     """
-    bcftools view --threads ${task.cpus} --include 'POS>0' $vcf | bcftools sort --output-type z --output ${vcf.simpleName}.mm2.cutesv.s1.fixed.vcf.gz
+    bcftools view --threads ${task.cpus} --include 'POS>0' $vcf | bcftools sort --output-type v --output-file ${sample_name}.cutesv.vcf
     """
     stub:
     """
-    touch ${vcf.simpleName}.mm2.cutesv.s1.vcf.gz
+    touch ${sample_name}.cutesv.vcf
     """
 }
 
 process SNIFFLES {
     input:
-    tuple val(sample_name), path(bam) 
+    tuple val(sample_name), path(bam), path(bai)
     output:
     tuple val(sample_name), path("${bam.simpleName}.mm2.sniffles.s1.vcf")
     script:
     """
-    sniffles -t ${task.cpus} --num_reads_report -1 --tmp_file tmp1 --min_support 1 --cluster -m $map_sort_bam_sniffles -v ${map_sort_bam_sniffles.simpleName}.mm2.sniffles.s1.vcf
+    sniffles --threads ${task.cpus} --input $bam --vcf ${bam.simpleName}.mm2.sniffles.s1.vcf --reference $reference_fasta --phase --output-rnames --symbolic
     """
+    // sniffles -t ${task.cpus} --num_reads_report -1 --tmp_file tmp1 --min_support 1 --cluster -m $map_sort_bam_sniffles -v ${map_sort_bam_sniffles.simpleName}.mm2.sniffles.s1.vcf
     stub:
     """
     touch ${bam.simpleName}.mm2.sniffles.s1.vcf
@@ -209,26 +210,23 @@ process POSTPROCESS_SNIFFLES {
     input:
     tuple val(sample_name), path(vcf)
     output:
-    tuple val(sample_name), path("${vcf.simpleName}.mm2.sniffles.s1.vcf.gz")
+    tuple val(sample_name), path("${sample_name}.sniffles.vcf")
     script:
-    """
-    bash postprocess_sniffles.sh $vcf
-    """
+    template 'postprocess_sniffles.sh'
     stub:
     """
-    touch ${vcf.simpleName}.mm2.sniffles.s1.vcf.gz
+    touch ${sample_name}.sniffles.vcf
     """
 }
 
-
 process SVIM {
     input:
-    tuple val(sample_name), path(bam)
+    tuple val(sample_name), path(bam), path(bai)
     output:
     tuple val(sample_name), path("${bam.simpleName}.mm2.svim.vcf")
     script:
     """
-    svim alignment --read_names --zmws out_svim/  $map_sort_bam_svim $reference_fasta
+    svim alignment --read_names out_svim $bam $reference_fasta
     mv out_svim/variants.vcf ${bam.simpleName}.mm2.svim.vcf
     """
     stub:
@@ -241,20 +239,18 @@ process POSTPROCESS_SVIM {
     input:
     tuple val(sample_name), path(vcf)
     output:
-    tuple val(sample_name), path("${vcf.simpleName}.mm2.svim.s1.vcf.gz")
+    tuple val(sample_name), path("${sample_name}.svim.vcf")
     script:
-    """
-    bash postprocess_svim.sh $vcf
-    """
+    template 'postprocess_svim.sh' 
     stub:
     """
-    touch ${vcf.simpleName}.mm2.svim.s1.vcf.gz
+    touch ${sample_name}.svim.vcf
     """
 }
 
 process JASMINE {
     input:
-    tuple val(sample_name), path(bam), path(cutesv_vcf), path(sniffles_vcf), path(svim_vcf)
+    tuple val(sample_name), path(bam), path(bai), path(cutesv_vcf), path(sniffles_vcf), path(svim_vcf)
     output:
     tuple val(sample_name), path("${sample_name}_jasmine_iris.vcf"), path(cutesv_vcf), path(sniffles_vcf), path(svim_vcf)
     script:
@@ -349,14 +345,14 @@ workflow {
     all_phased_families_tuple_with_index = INDEX_VCF(families_to_merge_and_standard_families.standard_families.transpose().mix(merged_families))
 
 
-    // // Haplotag each sample's bam file using its phased family VCF
+    // Haplotag each sample's bam file using its phased family VCF
     haplotag_bam_tuple = HAPLOTAG(sample_bam_tuple.combine(all_phased_families_tuple_with_index, by: 0))
 
     // // Run variant callers
     cutesv_tuple = POSTPROCESS_CUTESV(CUTESV(haplotag_bam_tuple))
-    // sniffles_tuple = POSTPROCESS_SNIFFLES(SNIFFLES(haplotag_bam_tuple))
-    // svim_tuple = POSTPROCESS_SVIM(SVIM(haplotag_bam_tuple))
+    sniffles_tuple = POSTPROCESS_SNIFFLES(SNIFFLES(haplotag_bam_tuple))
+    svim_tuple = POSTPROCESS_SVIM(SVIM(haplotag_bam_tuple))
 
-    // // Merge variant callers (within each sample) using Jasmine
-    // jasmine_tuple = POSTPROCESS_JASMINE(JASMINE(haplotag_bam_tuple.join(cutesv_tuple).join(sniffles_tuple).join(svim_tuple)))
+    // Merge variant callers (within each sample) using Jasmine
+    jasmine_tuple = POSTPROCESS_JASMINE(JASMINE(haplotag_bam_tuple.join(cutesv_tuple).join(sniffles_tuple).join(svim_tuple)))
 }
