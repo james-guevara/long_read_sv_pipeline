@@ -24,6 +24,8 @@ params.outdir = '/expanse/projects/sebat1/tjena/LongReadAnalysisPipeline/Ashkena
 outdir= params.outdir ?: '/expanse/projects/sebat1/tjena/LongReadAnalysisPipeline/Ashkenazi/pipeline_output'
 println "output : $params.outdir"
 
+params.useSnifflesV1 = true
+if (params.useSnifflesV1) { useSnifflesV1 = params.useSnifflesV1 }
 params.hifi = false
 if (params.hifi) { hifi = params.hifi }
 
@@ -43,6 +45,7 @@ if (params.help) {
     ----------------
     --outdir		path to where the pipeline outputs will be saved.
     --hifi		true if input files are PB hifi reads. Parameters for mapping and SV calling depend on this
+    --useSnifflesV1     use sniffles v1 (as opposed to sniffles v2)
     Execution environment dependency:
     ---------------------------------
     process CUTESV and JASMINE assume a SDSC slurm environment to create a temporary TMP_DIR directory in the 
@@ -224,7 +227,7 @@ process MERGE_FAMILY_VCFS {
     conda '/home/ux453059/miniconda3/envs/sambcfenv'
 
     input:
-    tuple val(family_id), path(vcfs, stageAs: "?.vcf.gz")
+    tuple val(family_id), path(vcfs, stageAs: "?.vcf.gz"), path(vcf_csis, stageAs: "?.vcf.gz.csi")
     output:
     tuple val(family_id), path("${family_id}.phased.vcf.gz"), path("${family_id}.phased.vcf.gz.csi")
     script:
@@ -321,16 +324,36 @@ process SNIFFLES {
     tuple val(sampleName),path("${map_sort_bam_sniffles.simpleName}.mm2.sniffles.s1.vcf")
  
     script:
-    if(params.hifi)
+    if(params.hifi && params.useSnifflesV1)
       """
       sniffles --ccs_reads -t ${task.cpus} --num_reads_report -1 --tmp_file tmp1 --min_support 1 --cluster -m $map_sort_bam_sniffles \
         -v ${map_sort_bam_sniffles.simpleName}.mm2.sniffles.s1.vcf
       """
-    else
+    else if(!params.hifi && params.useSnifflesV1)
       """
       sniffles -t ${task.cpus} --num_reads_report -1 --tmp_file tmp1 --min_support 1 --cluster -m $map_sort_bam_sniffles \
         -v ${map_sort_bam_sniffles.simpleName}.mm2.sniffles.s1.vcf
       """
+
+    stub:
+    """
+    touch ${map_sort_bam_sniffles.simpleName}.mm2.sniffles.s1.vcf
+    """
+}
+
+process SNIFFLES_V2 {
+    conda '/home/ux453059/miniconda3/envs/swimenv'
+
+    input:
+    tuple val(sampleName),path(map_sort_bam_sniffles),path(map_sort_bam_index_sniffles)
+
+    output:
+    tuple val(sampleName),path("${map_sort_bam_sniffles.simpleName}.mm2.sniffles.s1.vcf")
+
+    script:
+    """
+    sniffles -t ${task.cpus} --minsupport 1 --reference $reference_fasta --tandem-repeats $trBedFile -i $map_sort_bam_sniffles -v ${map_sort_bam_sniffles.simpleName}.mm2.sniffles.s1.vcf
+    """
 
     stub:
     """
@@ -796,7 +819,11 @@ workflow {
 
     // Run variant callers
     cutesv_tuple = POSTPROCESS_CUTESV(CUTESV( haplotag_bam_tuple ))
-    sniffles_tuple = POSTPROCESS_SNIFFLES(SNIFFLES( haplotag_bam_tuple ))
+    if(params.useSnifflesV1) {
+	sniffles_tuple = POSTPROCESS_SNIFFLES(SNIFFLES( haplotag_bam_tuple ))
+    } else {
+	sniffles_tuple = POSTPROCESS_SNIFFLES(SNIFFLES_V2( haplotag_bam_tuple ))
+    }
     svim_tuple = POSTPROCESS_SVIM(SVIM( haplotag_bam_tuple ))
     pbsv_tuple = POSTPROCESS_PBSV( PBSV(haplotag_bam_tuple) )
 
