@@ -173,18 +173,33 @@ process HAPLOTAG {
     input:
     tuple val(family_name), val(sample_name), path(bam), path(bai), path(phased_family_vcf), path(phased_family_vcf_tbi)
     output:
-    tuple val(sample_name), path("${sample_name}.haplotag.bam"), path("${sample_name}.haplotag.bam.bai")
+    tuple val(sample_name), path("${sample_name}.haplotag.bam")
 
     script:
     """
     whatshap haplotag --reference ${params.reference_fasta} --sample $sample_name --skip-missing-contigs --ignore-read-groups --tag-supplementary --output-haplotag-list ${sample_name}_haplotag_list.tab.gz --output ${sample_name}.haplotag.bam $phased_family_vcf $bam
-    samtools index -@ ${task.cpus} ${sample_name}.haplotag.bam
     """
 
     stub:
     """
     touch ${sample_name}.haplotag.bam
-    touch ${sample_name}.haplotag.bam.bai
+    """
+}
+
+process INDEX_BAM2 {
+    input:
+    tuple val(sample_name), path(bam)
+    output:
+    tuple val(sample_name), path(bam), path("${bam}.bai")
+
+    script:
+    """
+    samtools index -@ ${task.cpus} $bam
+    """
+
+    stub:
+    """
+    touch ${bam}.bai
     """
 }
 
@@ -427,58 +442,58 @@ workflow {
     // Use minimap2 for mapping, and samtools for adding read group in the header and for sorting and indexing the BAM file
     sample_bam_tuple_channel = INDEX_BAM( ADD_READGROUP( MAP(sample_fastq_tuple_channel) ) )
 
-//    // Get coverage using mosdepth
-//    COVERAGE(sample_bam_tuple_channel)
-//
-//    // Phasing step uses pedigree structure (though it's still optional)
-//    pedigree_tuple_channel = Channel
-//                                    .fromPath(params.pedigree_file, type: "file", checkIfExists: true)
-//                                    .splitCsv(sep: "\t", header: ["family_name", "sample_name", "father_name", "mother_name", "sex", "phenotype"])
-//                                    .map { row -> tuple(row.sample_name, row.family_name) }
-//
-//    // Join the sample bam tuples with their family names, and then group samples by family (the output tuples will look like this: [ family_name, [sample_name_0, sample_name_1, sample_name_2], [bam_0, bam_1, bam_2], [bai_0, bai_1, bai_2] ]
-//    family_sample_bam_tuple_channel = sample_bam_tuple_channel
-//                                                              .join(pedigree_tuple_channel)
-//                                                              .map { it -> tuple(it[3], it[0], it[1], it[2]) }
-//
-//    family_sample_bam_tuple_channel
-//                                    .groupTuple()
-//                                    .branch {
-//                                        large_families: it[1].size() >= 5
-//                                        standard_families: true
-//                                    }
-//                                    .set { families_to_be_phased } 
-//    families_to_be_phased.large_families
-//                                        .transpose()
-//                                        .branch {
-//                                            father: pedigree_dictionary[it[1]] == "Father"
-//                                            mother: pedigree_dictionary[it[1]] == "Mother"
-//                                            child: true
-//                                        }
-//                                        .set { large_family_samples}
-//    large_family_trios = large_family_samples.father.join(large_family_samples.mother).combine(large_family_samples.child, by: 0).map { it -> tuple( it[0], [ it[1], it[4], it[7] ], [ it[2], it[5], it[8] ], [ it[3], it[6], it[9] ] ) }
-//
-//    // For phasing, if we're in joint-called SNV VCF mode, then we have to subset the VCF. Otherwise, we can skip the SUBSET_VCF process and find the family VCF corresponding to this particular family.
-//    // But, if we're phasing a large family, we need to subset the VCF regardless if it is joint-called or family VCF because it's too big no matter what.
-//    
-//    // Focus on standard families
-//    if (params.cohort_vcf) {
-//        cohort_vcf_tbi = file("${params.cohort_vcf}.tbi", checkIfExists: true)
-//        subsetted_family_tuples = SUBSET_VCF( families_to_be_phased.standard_families, params.cohort_vcf )
-//    }
-//    else if (params.family_vcfs) {
-//        // Simply join the family VCF to the standard_families tuple 
-//        family_vcf_tuple_channel = Channel
-//                                            .fromPath(params.family_vcfs, type: "file", checkIfExists: true)
-//                                            .splitCsv(sep: "\t", header: ["family_name", "family_vcf_file_path"])
-//                                            .map { row -> tuple(row.family_name, row.family_vcf_file_path) }
-//        subsetted_family_tuples = families_to_be_phased.standard_families.join(family_vcf_tuple_channel)
-//    }
-//    else {
-//    log.info "Specify one of the following parameters: cohort_vcf or family_vcfs"
-//    exit(0)
-//    }
-//    subsetted_indexed_family_tuples = INDEX_VCF( subsetted_family_tuples )
+    // Get coverage using mosdepth
+    COVERAGE(sample_bam_tuple_channel)
+
+    // Phasing step uses pedigree structure (though it's still optional)
+    pedigree_tuple_channel = Channel
+                                    .fromPath(params.pedigree_file, type: "file", checkIfExists: true)
+                                    .splitCsv(sep: "\t", header: ["family_name", "sample_name", "father_name", "mother_name", "sex", "phenotype"])
+                                    .map { row -> tuple(row.sample_name, row.family_name) }
+
+    // Join the sample bam tuples with their family names, and then group samples by family (the output tuples will look like this: [ family_name, [sample_name_0, sample_name_1, sample_name_2], [bam_0, bam_1, bam_2], [bai_0, bai_1, bai_2] ]
+    family_sample_bam_tuple_channel = sample_bam_tuple_channel
+                                                              .join(pedigree_tuple_channel)
+                                                              .map { it -> tuple(it[3], it[0], it[1], it[2]) }
+
+    family_sample_bam_tuple_channel
+                                    .groupTuple()
+                                    .branch {
+                                        large_families: it[1].size() >= 5
+                                        standard_families: true
+                                    }
+                                    .set { families_to_be_phased } 
+    families_to_be_phased.large_families
+                                        .transpose()
+                                        .branch {
+                                            father: pedigree_dictionary[it[1]] == "Father"
+                                            mother: pedigree_dictionary[it[1]] == "Mother"
+                                            child: true
+                                        }
+                                        .set { large_family_samples}
+    large_family_trios = large_family_samples.father.join(large_family_samples.mother).combine(large_family_samples.child, by: 0).map { it -> tuple( it[0], [ it[1], it[4], it[7] ], [ it[2], it[5], it[8] ], [ it[3], it[6], it[9] ] ) }
+
+    // For phasing, if we're in joint-called SNV VCF mode, then we have to subset the VCF. Otherwise, we can skip the SUBSET_VCF process and find the family VCF corresponding to this particular family.
+    // But, if we're phasing a large family, we need to subset the VCF regardless if it is joint-called or family VCF because it's too big no matter what.
+    
+    // Focus on standard families
+    if (params.cohort_vcf) {
+        cohort_vcf_tbi = file("${params.cohort_vcf}.tbi", checkIfExists: true)
+        subsetted_family_tuples = SUBSET_VCF( families_to_be_phased.standard_families, params.cohort_vcf )
+    }
+    else if (params.family_vcfs) {
+        // Simply join the family VCF to the standard_families tuple 
+        family_vcf_tuple_channel = Channel
+                                            .fromPath(params.family_vcfs, type: "file", checkIfExists: true)
+                                            .splitCsv(sep: "\t", header: ["family_name", "family_vcf_file_path"])
+                                            .map { row -> tuple(row.family_name, row.family_vcf_file_path) }
+        subsetted_family_tuples = families_to_be_phased.standard_families.join(family_vcf_tuple_channel)
+    }
+    else {
+    log.info "Specify one of the following parameters: cohort_vcf or family_vcfs"
+    exit(0)
+    }
+    subsetted_indexed_family_tuples = INDEX_VCF( subsetted_family_tuples )
 //
 //    // Phasing
 //    phased_family_tuples = PHASE( subsetted_indexed_family_tuples)
@@ -493,7 +508,7 @@ workflow {
 //    all_phased_families_tuple_with_index = families_to_merge_and_standard_families.standard_families.transpose()
 //
 //    // Haplotag each sample's BAM using its phased family VCF 
-//    haplotag_bam_tuple = HAPLOTAG( family_sample_bam_tuple_channel.combine( all_phased_families_tuple_with_index, by: 0 ) )
+//    haplotag_bam_tuple = INDEX_BAM2( HAPLOTAG( family_sample_bam_tuple_channel.combine( all_phased_families_tuple_with_index, by: 0 ) ) )
 //
 //    // Run variant callers
 //    cutesv_tuple = POSTPROCESS_CUTESV( CUTESV(haplotag_bam_tuple) )
