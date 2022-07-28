@@ -36,17 +36,15 @@ process MAP {
     script:
     if (params.sequencing_mode == "ccs_hifi") 
     """ 
-    minimap2 -t ${task.cpus} -o ${sample_name}.sam -a -x map-hifi --MD -Y  ${params.reference_fasta} $fastq_gz | samtools sort --reference ${params.reference_fasta} --threads ${task.cpus} --output-fmt BAM -o ${sample_name}.bam
-
+    minimap2 -t ${task.cpus} -o ${sample_name}.sam -a -x map-hifi --MD -Y -R "@RG\tID:${sample_name}\tSM:${sample_name}"  ${params.reference_fasta} $fastq_gz | samtools sort --reference ${params.reference_fasta} --threads ${task.cpus} --output-fmt BAM -o ${sample_name}.bam
     """
     else if (params.sequencing_mode == "ccs_subread_fallback") // I might have to change the -Q parameter (though I don't see it in the most recent version of minimap2)
     """
-    minimap2 -t ${task.cpus} -a -x map-pb --MD -Y  ${params.reference_fasta} $fastq_gz | samtools sort --reference ${params.reference_fasta} --threads ${task.cpus} --output-fmt BAM -o ${sample_name}.bam
-
+    minimap2 -t ${task.cpus} -a -x map-pb --MD -Y -R "@RG\tID:${sample_name}\tSM:${sample_name}" ${params.reference_fasta} $fastq_gz | samtools sort --reference ${params.reference_fasta} --threads ${task.cpus} --output-fmt BAM -o ${sample_name}.bam
     """
     else if (params.sequencing_mode == "ont")
     """
-    minimap2 -t ${task.cpus} -a -x map-ont  --MD -Y  ${params.reference_fasta} $fastq_gz | samtools sort --reference ${params.reference_fasta} --threads ${task.cpus} --output-fmt BAM -o ${sample_name}.bam
+    minimap2 -t ${task.cpus} -a -x map-ont  --MD -Y -R "@RG\tID:${sample_name}\tSM:${sample_name}"  ${params.reference_fasta} $fastq_gz | samtools sort --reference ${params.reference_fasta} --threads ${task.cpus} --output-fmt BAM -o ${sample_name}.bam
     """
  
     stub: 
@@ -55,22 +53,22 @@ process MAP {
     """ 
 }
 
-process ADD_READGROUP {
-    input:
-    tuple val(sample_name), path(bam, stageAs: "input.bam")
-    output:
-    tuple val(sample_name), path("${sample_name}.bam")
-
-    script:
-    """
-    samtools addreplacerg --threads ${task.cpus} -r "@RG\tID:$sample_name\tSM:$sample_name" --output-fmt BAM -o ${sample_name}.bam $bam
-    """
-
-    stub:
-    """
-    touch ${sample_name}.bam
-    """
-}
+//process ADD_READGROUP {
+//    input:
+//    tuple val(sample_name), path(bam, stageAs: "input.bam")
+//    output:
+//    tuple val(sample_name), path("${sample_name}.bam")
+//
+//    script:
+//    """
+//    samtools addreplacerg --threads ${task.cpus} -r "@RG\tID:$sample_name\tSM:$sample_name" --output-fmt BAM -o ${sample_name}.bam $bam
+//    """
+//
+//    stub:
+//    """
+//    touch ${sample_name}.bam
+//    """
+//}
 
 process INDEX_BAM {
     input:
@@ -440,7 +438,7 @@ workflow {
                                         .splitCsv(sep: "\t", header: ["sample_name", "fastq_file_path"])
                                         .map { row -> tuple(row.sample_name, row.fastq_file_path) }
     // Use minimap2 for mapping, and samtools for adding read group in the header and for sorting and indexing the BAM file
-    sample_bam_tuple_channel = INDEX_BAM( ADD_READGROUP( MAP(sample_fastq_tuple_channel) ) )
+    sample_bam_tuple_channel = INDEX_BAM( ( MAP(sample_fastq_tuple_channel) ) )
 
     // Get coverage using mosdepth
     COVERAGE(sample_bam_tuple_channel)
