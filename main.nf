@@ -36,15 +36,15 @@ process MAP {
     script:
     if (params.sequencing_mode == "ccs_hifi") 
     """ 
-    minimap2 -t ${task.cpus} -o ${sample_name}.sam -a -x map-hifi --MD -Y -R "@RG\tID:${sample_name}\tSM:${sample_name}"  ${params.reference_fasta} $fastq_gz | samtools sort --reference ${params.reference_fasta} --threads ${task.cpus} --output-fmt BAM -o ${sample_name}.bam
+    minimap2 -t ${task.cpus} -o ${sample_name}.sam -a -x map-hifi --MD -Y -R '@RG\\tID:${sample_name}\\tSM:${sample_name}'  ${params.reference_fasta} $fastq_gz | samtools sort --reference ${params.reference_fasta} --threads ${task.cpus} --output-fmt BAM -o ${sample_name}.bam
     """
     else if (params.sequencing_mode == "ccs_subread_fallback") // I might have to change the -Q parameter (though I don't see it in the most recent version of minimap2)
     """
-    minimap2 -t ${task.cpus} -a -x map-pb --MD -Y -R "@RG\tID:${sample_name}\tSM:${sample_name}" ${params.reference_fasta} $fastq_gz | samtools sort --reference ${params.reference_fasta} --threads ${task.cpus} --output-fmt BAM -o ${sample_name}.bam
+    minimap2 -t ${task.cpus} -a -x map-pb --MD -Y -R '@RG\\tID:${sample_name}\\tSM:${sample_name}' ${params.reference_fasta} $fastq_gz | samtools sort --reference ${params.reference_fasta} --threads ${task.cpus} --output-fmt BAM -o ${sample_name}.bam
     """
     else if (params.sequencing_mode == "ont")
     """
-    minimap2 -t ${task.cpus} -a -x map-ont  --MD -Y -R "@RG\tID:${sample_name}\tSM:${sample_name}"  ${params.reference_fasta} $fastq_gz | samtools sort --reference ${params.reference_fasta} --threads ${task.cpus} --output-fmt BAM -o ${sample_name}.bam
+    minimap2 -t ${task.cpus} -a -x map-ont  --MD -Y -R '@RG\\tID:${sample_name}\\tSM:${sample_name}'  ${params.reference_fasta} $fastq_gz | samtools sort --reference ${params.reference_fasta} --threads ${task.cpus} --output-fmt BAM -o ${sample_name}.bam
     """
  
     stub: 
@@ -52,23 +52,6 @@ process MAP {
     touch ${sample_name}.bam 
     """ 
 }
-
-//process ADD_READGROUP {
-//    input:
-//    tuple val(sample_name), path(bam, stageAs: "input.bam")
-//    output:
-//    tuple val(sample_name), path("${sample_name}.bam")
-//
-//    script:
-//    """
-//    samtools addreplacerg --threads ${task.cpus} -r "@RG\tID:$sample_name\tSM:$sample_name" --output-fmt BAM -o ${sample_name}.bam $bam
-//    """
-//
-//    stub:
-//    """
-//    touch ${sample_name}.bam
-//    """
-//}
 
 process INDEX_BAM {
     input:
@@ -233,7 +216,8 @@ process POSTPROCESS_CUTESV {
 
     script:
     """
-    bcftools view --include 'POS>0' $vcf | bcftools sort --output-file ${sample_name}.cutesv.vcf
+    mkdir tmp
+    bcftools view --include 'POS>0' $vcf | bcftools sort --temp-dir tmp --output-file ${sample_name}.cutesv.vcf
     """
 
     stub:
@@ -250,7 +234,7 @@ process SNIFFLES {
 
     script:
     """
-    sniffles --threads ${task.cpus} --minsupport 1 --reference ${params.reference_fasta} --tandem-repeats ${params.tandem_repeats_sniffles_bed} --input $bam --vcf ${sample_name}.sniffles.vcf
+    sniffles --threads ${task.cpus} --minsupport 1 --output-rnames --reference ${params.reference_fasta} --tandem-repeats ${params.tandem_repeats_sniffles_bed} --input $bam --vcf ${sample_name}.sniffles.vcf
     """
 
     stub:
@@ -492,29 +476,29 @@ workflow {
     exit(0)
     }
     subsetted_indexed_family_tuples = INDEX_VCF( subsetted_family_tuples )
-//
-//    // Phasing
-//    phased_family_tuples = PHASE( subsetted_indexed_family_tuples)
-//    phased_family_tuples
-//                        .groupTuple()
-//                        .branch {
-//                            families_to_merge: it[1].size() > 1
-//                            standard_families: true
-//                        }
-//                        .set { families_to_merge_and_standard_families }
-//  
-//    all_phased_families_tuple_with_index = families_to_merge_and_standard_families.standard_families.transpose()
-//
-//    // Haplotag each sample's BAM using its phased family VCF 
-//    haplotag_bam_tuple = INDEX_BAM2( HAPLOTAG( family_sample_bam_tuple_channel.combine( all_phased_families_tuple_with_index, by: 0 ) ) )
-//
-//    // Run variant callers
-//    cutesv_tuple = POSTPROCESS_CUTESV( CUTESV(haplotag_bam_tuple) )
-//    sniffles_tuple = POSTPROCESS_SNIFFLES( SNIFFLES(haplotag_bam_tuple) )
-//    svim_tuple = POSTPROCESS_SVIM( SVIM(haplotag_bam_tuple) )
-//    pbsv_tuple = POSTPROCESS_PBSV( PBSV(haplotag_bam_tuple) )
-//
-//    // Merge variant calls (within each sample) using Jasmine
-//    jasmine_vcf_tuple = JASMINE( haplotag_bam_tuple.join( sniffles_tuple ).join( cutesv_tuple ).join( pbsv_tuple ).join( svim_tuple ) )
+
+    // Phasing
+    phased_family_tuples = PHASE( subsetted_indexed_family_tuples)
+    phased_family_tuples
+                        .groupTuple()
+                        .branch {
+                            families_to_merge: it[1].size() > 1
+                            standard_families: true
+                        }
+                        .set { families_to_merge_and_standard_families }
+  
+    all_phased_families_tuple_with_index = families_to_merge_and_standard_families.standard_families.transpose()
+
+    // Haplotag each sample's BAM using its phased family VCF 
+    haplotag_bam_tuple = INDEX_BAM2( HAPLOTAG( family_sample_bam_tuple_channel.combine( all_phased_families_tuple_with_index, by: 0 ) ) )
+
+    // Run variant callers
+    cutesv_tuple = POSTPROCESS_CUTESV( CUTESV(haplotag_bam_tuple) )
+    sniffles_tuple = POSTPROCESS_SNIFFLES( SNIFFLES(haplotag_bam_tuple) )
+    svim_tuple = POSTPROCESS_SVIM( SVIM(haplotag_bam_tuple) )
+    pbsv_tuple = POSTPROCESS_PBSV( PBSV(haplotag_bam_tuple) )
+
+    // Merge variant calls (within each sample) using Jasmine
+    jasmine_vcf_tuple = JASMINE( haplotag_bam_tuple.join( sniffles_tuple ).join( cutesv_tuple ).join( pbsv_tuple ).join( svim_tuple ) )
 
 }
