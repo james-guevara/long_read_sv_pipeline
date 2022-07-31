@@ -7,24 +7,34 @@ if (params.help) {
     Required:
     --sample_fastq_table    Tab-delimited file, where the first column corresponds to the sample name and the second column corresponds to the file path of the fastq reads input.
     --reference_fasta       Reference genome to which the reads are aligned.
-    --joint_called_vcf      Joint-called (or merged) VCF with all the samples in the cohort.
     --pedigree_file         Pedigree file (.fam, .ped, or .psam) containing all the samples in the cohort.
     --sequencing_mode       The sequencing technology used to generate the input reads. Must be one of: ccs_hifi, ccs_subread_fallback, or ont
+    --tandem_repeats_bed    File path of tandem repeats bed file (used for Sniffles and ...).
+
+    One of these modes are required for phasing:
+    --cohort_vcf            File path of the cohort VCF (that contains all the samples in the cohort).
+    --family_vcfs           Tab-delimited file, where the first column corresponds to the family names and the second column corresponds to the family VCF filepath.
     """.stripIndent()
     exit 0
 }
 
-params.sample_fastq_table_tsv = file("sample_files_Ashkenazi_tests.tsv", type: "file", checkIfExists: true)
-params.reference_fasta = file("/expanse/projects/sebat1/tjena/LongReadAnalysisPipeline/Homo_sapiens_assembly38.fasta", type: "file", checkIfExists: true)
+params.reference_fasta = file("resources/Homo_sapiens_assembly38.fasta", type: "file", checkIfExists: true)
 params.reference_fasta_fai = file("${params.reference_fasta}.fai", type: "file", checkIfExists: true)
-params.pedigree_file = file("AshkenazimTrio.ped", type: "file", checkIfExists: true)
+
+params.sample_fastq_table_tsv = file("testing_data/sample_files_Ashkenazi_tests.tsv", type: "file", checkIfExists: true)
+params.pedigree_file = file("testing_data/AshkenazimTrio.ped", type: "file", checkIfExists: true)
+
 params.sequencing_mode = "ccs_hifi"
 sequencing_modes = ["ccs_hifi", "ccs_subread_fallback", "ont"]
 if (sequencing_modes.contains(params.sequencing_mode) == false) {
     log.info "Sequencing mode parameter must be one of: ccs_hifi, ccs_subread_fallback, or ont"
     exit(0)
 }
-params.tandem_repeats_sniffles_bed =  file("/expanse/projects/sebat1/tjena/LongReadAnalysisPipeline/human_GRCh38_no_alt_analysis_set.trf.bed", type: "file", checkIfExists: true)
+params.tandem_repeats_bed =  file("resources/human_GRCh38_no_alt_analysis_set.trf.bed", type: "file", checkIfExists: true)
+
+// Choose between these 2 types of files
+params.cohort_vcf = ""
+params.family_vcfs = ""
 
 
 process MAP {
@@ -88,27 +98,36 @@ process COVERAGE {
 
 process SUBSET_VCF {
     input:
-    tuple val(family_id), val(sample_names), path(bams), path(bais)
+    tuple val(family_name), val(sample_names), path(bams), path(bais)
     path(cohort_vcf)
     output:
-    tuple val(family_id), val(sample_names), path(bams), path(bais), path("${family_id}.vcf.gz")
+    tuple val(family_name), val(sample_names), path(bams), path(bais), path("${family_name}.vcf.gz")
 
     script:
     """
-    bcftools view --threads ${task.cpus} --samples ${sample_names.join(",")} --output-type z --output-file ${family_id}.vcf.gz $cohort_vcf
+    bcftools view --threads ${task.cpus} --samples ${sample_names.join(",")} --output-type z --output-file ${family_name}.vcf.gz $cohort_vcf
     """
 
+    stub:
+    """
+    touch ${family_name}.vcf.gz
+    """
 }
 
 process INDEX_VCF {
     input:
-    tuple val(family_id), val(sample_names), path(bams), path(bais), path(family_vcf)
+    tuple val(family_name), val(sample_names), path(bams), path(bais), path(family_vcf)
     output:
-    tuple val(family_id), val(sample_names), path(bams), path(bais), path(family_vcf), path("${family_vcf}.tbi")
+    tuple val(family_name), val(sample_names), path(bams), path(bais), path(family_vcf), path("${family_vcf}.tbi")
 
     script:
     """
     tabix $family_vcf 
+    """
+
+    stub:
+    """
+    touch ${family_vcf}.tbi
     """
 }
 
@@ -234,7 +253,7 @@ process SNIFFLES {
 
     script:
     """
-    sniffles --threads ${task.cpus} --minsupport 1 --output-rnames --reference ${params.reference_fasta} --tandem-repeats ${params.tandem_repeats_sniffles_bed} --input $bam --vcf ${sample_name}.sniffles.vcf
+    sniffles --threads ${task.cpus} --minsupport 1 --output-rnames --reference ${params.reference_fasta} --tandem-repeats ${params.tandem_repeats_bed} --input $bam --vcf ${sample_name}.sniffles.vcf
     """
 
     stub:
@@ -346,12 +365,12 @@ process PBSV {
     script:
     if (params.sequencing_mode == "ccs_hifi" || params.sequencing_mode == "ccs_subread_fallback")
     """
-    pbsv discover --sample $sample_name --tandem-repeats ${params.tandem_repeats_sniffles_bed} $bam ${sample_name}.svsig.gz
+    pbsv discover --sample $sample_name --tandem-repeats ${params.tandem_repeats_bed} $bam ${sample_name}.svsig.gz
     pbsv call --ccs --call-min-reads-one-sample 1 ${params.reference_fasta} ${sample_name}.svsig.gz ${sample_name}.pbsv.vcf
     """
     else
     """
-    pbsv discover --sample $sample_name --tandem-repeats ${params.tandem_repeats_sniffles_bed} $bam ${sample_name}.svsig.gz
+    pbsv discover --sample $sample_name --tandem-repeats ${params.tandem_repeats_bed} $bam ${sample_name}.svsig.gz
     pbsv call --call-min-reads-one-sample 1 ${params.reference_fasta} ${sample_name}.svsig.gz ${sample_name}.pbsv.vcf
     """
 
@@ -417,17 +436,20 @@ process JASMINE {
 
 
 workflow {
+    // Create channel for sample_fastq_tuples. Each tuple is of the form: (sample_name, fastq_file_path).
     sample_fastq_tuple_channel = Channel
                                         .fromPath(params.sample_fastq_table_tsv, type: "file", checkIfExists: true)
                                         .splitCsv(sep: "\t", header: ["sample_name", "fastq_file_path"])
                                         .map { row -> tuple(row.sample_name, row.fastq_file_path) }
-    // Use minimap2 for mapping, and samtools for adding read group in the header and for sorting and indexing the BAM file
+
+    // The MAP process uses minimap2 for mapping (and adding read group information) and uses samtools for sorting the output BAM files.
+    // The output BAM file from MAP is then indexed in the INDEX_BAM process (using samtools index).
     sample_bam_tuple_channel = INDEX_BAM( ( MAP(sample_fastq_tuple_channel) ) )
 
     // Get coverage using mosdepth
     COVERAGE(sample_bam_tuple_channel)
 
-    // Phasing step uses pedigree structure (though it's still optional)
+    // Phasing step uses pedigree structure.
     pedigree_tuple_channel = Channel
                                     .fromPath(params.pedigree_file, type: "file", checkIfExists: true)
                                     .splitCsv(sep: "\t", header: ["family_name", "sample_name", "father_name", "mother_name", "sex", "phenotype"])
@@ -445,6 +467,7 @@ workflow {
                                         standard_families: true
                                     }
                                     .set { families_to_be_phased } 
+    // Deal with large families (too large to phased together) by splitting them up into trios (and they will be merged after phasing).
     families_to_be_phased.large_families
                                         .transpose()
                                         .branch {
@@ -461,22 +484,36 @@ workflow {
     // Focus on standard families
     if (params.cohort_vcf) {
         cohort_vcf_tbi = file("${params.cohort_vcf}.tbi", checkIfExists: true)
-        subsetted_family_tuples = SUBSET_VCF( families_to_be_phased.standard_families, params.cohort_vcf )
+        subsetted_family_tuples = SUBSET_VCF( large_family_trios.mix( families_to_be_phased.standard_families ), params.cohort_vcf )
     }
     else if (params.family_vcfs) {
-        // Simply join the family VCF to the standard_families tuple 
+        // Join the family VCF to the standard_families tuple 
         family_vcf_tuple_channel = Channel
                                             .fromPath(params.family_vcfs, type: "file", checkIfExists: true)
                                             .splitCsv(sep: "\t", header: ["family_name", "family_vcf_file_path"])
                                             .map { row -> tuple(row.family_name, row.family_vcf_file_path) }
-        subsetted_family_tuples = families_to_be_phased.standard_families.join(family_vcf_tuple_channel)
+
+        standard_subsetted_family_tuples = families_to_be_phased.standard_families.join(family_vcf_tuple_channel)
+        // Still need to use SUBSET_VCF for the large families, but not sure how... (need to test this part).
+       
+        large_family_trios
+                                                        .join(family_vcf_tuple_channel)
+                                                        .multiMap { it ->
+                                                                    bam_channel: tuple(it[0], it[1], it[2], it[3])
+                                                                    vcf_channel: it[-1]
+                                                                  } 
+                                                        .set { large_family_trios_with_vcf }
+        
+        subsetted_large_family_trios_tuples = SUBSET_VCF( large_family_trios_with_vcf.bam_channel, large_family_trios_with_vcf.vcf_channel  )
     }
     else {
-    log.info "Specify one of the following parameters: cohort_vcf or family_vcfs"
-    exit(0)
+        log.info "Specify one of the following parameters: cohort_vcf or family_vcfs"
+        exit(0)
     }
-    subsetted_indexed_family_tuples = INDEX_VCF( subsetted_family_tuples )
+    // TESTING //
+    exit(0)
 
+    subsetted_indexed_family_tuples = INDEX_VCF( subsetted_family_tuples )
     // Phasing
     phased_family_tuples = PHASE( subsetted_indexed_family_tuples)
     phased_family_tuples
@@ -486,19 +523,22 @@ workflow {
                             standard_families: true
                         }
                         .set { families_to_merge_and_standard_families }
-  
-    all_phased_families_tuple_with_index = families_to_merge_and_standard_families.standard_families.transpose()
 
-    // Haplotag each sample's BAM using its phased family VCF 
-    haplotag_bam_tuple = INDEX_BAM2( HAPLOTAG( family_sample_bam_tuple_channel.combine( all_phased_families_tuple_with_index, by: 0 ) ) )
+    // Merging the large family trio VCFs (and then use the mix operator to put all the family VCFs into one channel, all_phased_families_tuple) 
+    merged_families = MERGE_FAMILY_VCFS( families_to_merge_and_standard_families.families_to_merge )
+    all_phased_families_tuple_with_index = families_to_merge_and_standard_families.standard_families.transpose().mix(merged_families)
 
-    // Run variant callers
-    cutesv_tuple = POSTPROCESS_CUTESV( CUTESV(haplotag_bam_tuple) )
-    sniffles_tuple = POSTPROCESS_SNIFFLES( SNIFFLES(haplotag_bam_tuple) )
-    svim_tuple = POSTPROCESS_SVIM( SVIM(haplotag_bam_tuple) )
-    pbsv_tuple = POSTPROCESS_PBSV( PBSV(haplotag_bam_tuple) )
-
-    // Merge variant calls (within each sample) using Jasmine
-    jasmine_vcf_tuple = JASMINE( haplotag_bam_tuple.join( sniffles_tuple ).join( cutesv_tuple ).join( pbsv_tuple ).join( svim_tuple ) )
+//
+//    // Haplotag each sample's BAM using its phased family VCF 
+//    haplotag_bam_tuple = INDEX_BAM2( HAPLOTAG( family_sample_bam_tuple_channel.combine( all_phased_families_tuple_with_index, by: 0 ) ) )
+//
+//    // Run variant callers
+//    cutesv_tuple = POSTPROCESS_CUTESV( CUTESV(haplotag_bam_tuple) )
+//    sniffles_tuple = POSTPROCESS_SNIFFLES( SNIFFLES(haplotag_bam_tuple) )
+//    svim_tuple = POSTPROCESS_SVIM( SVIM(haplotag_bam_tuple) )
+//    pbsv_tuple = POSTPROCESS_PBSV( PBSV(haplotag_bam_tuple) )
+//
+//    // Merge variant calls (within each sample) using Jasmine
+//    jasmine_vcf_tuple = JASMINE( haplotag_bam_tuple.join( sniffles_tuple ).join( cutesv_tuple ).join( pbsv_tuple ).join( svim_tuple ) )
 
 }
