@@ -36,7 +36,6 @@ params.tandem_repeats_bed =  file("resources/human_GRCh38_no_alt_analysis_set.tr
 params.cohort_vcf = ""
 params.family_vcfs = ""
 
-
 process MAP {
     input: 
     tuple val(sample_name), path(fastq_gz)
@@ -417,6 +416,8 @@ process POSTPROCESS_PBSV {
 process JASMINE {
     input:
     tuple val(sample_name), path(bam), path(bai), path(sniffles_vcf), path(cutesv_vcf), path(pbsv_vcf), path(svim_vcf)
+    output:
+    tuple val(sample_name), path("${sample_name}.merged.vcf"), path(sniffles_vcf), path(cutesv_vcf), path(pbsv_vcf), path(svim_vcf)
  
     shell:
     '''
@@ -432,8 +433,45 @@ process JASMINE {
     """ 
 }
 
+process POSTPROCESS_JASMINE {
+    input:
+    tuple val(sample_name), path(jasmine_vcf, stageAs: "input.vcf"), path(sniffles_vcf), path(cutesv_vcf), path(pbsv_vcf), path(svim_vcf)
+    output:
+    tuple val(sample_name), path("${sample_name}.merged.vcf.gz"), path("${sample_name}.merged.vcf.gz")
 
+    shell:
+    '''
+    #!/bin/bash
 
+    HEADER_KEYS_CSV="ID=CIPOS ID=CILEN ID=q5 ID=STRAND"
+    HEADER_KEYS_PBSV="ID=SVANN ID=MATEID ID=MATEDIST ID=NearReferenceGap ID=NearContigEnd ID=Decoy ID=InsufficientStrandEvidence"
+    HEADER_KEYS_SVIM="ID=SUPPORT ID=STD_SPAN ID=STD_POS ID=STD_POS1 ID=STD_POS2 ID=SEQS ID=hom_ref ID=ZMWS ID=not_fully_covered"
+
+    vcf_temp=temp.vcf
+
+    bcftools view -h !{jasmine_vcf} | head -n -1 > $vcf_temp
+    for key in $HEADER_KEYS_CSV; do
+        bcftools view -h !{cutesv_vcf} | grep -w $key >> $vcf_temp
+    done
+    for key in $HEADER_KEYS_PBSV; do
+        bcftools view -h !{pbsv_vcf} | grep -w $key >> $vcf_temp
+    done
+    for key in $HEADER_KEYS_SVIM; do
+        bcftools view -h !{svim_vcf} | grep -w $key >> $vcf_temp
+    done
+    bcftools view -h !{jasmine_vcf} | tail -n 1 >> $vcf_temp
+    bcftools view -H !{jasmine_vcf} >> $vcf_temp
+
+    bcftools sort $vcf_temp | bgzip > !{sample_name}.merged.vcf.gz
+    tabix !{sample_name}.merged.vcf.gz
+    '''
+
+    stub:
+    """
+    touch ${sample_name}.merged.vcf.gz
+    touch ${sample_name}.merged.vcf.gz.tbi
+    """
+}
 
 workflow {
     // Create channel for sample_fastq_tuples. Each tuple is of the form: (sample_name, fastq_file_path).
@@ -459,7 +497,6 @@ workflow {
     family_sample_bam_tuple_channel = sample_bam_tuple_channel
                                                               .join(pedigree_tuple_channel)
                                                               .map { it -> tuple(it[3], it[0], it[1], it[2]) }
-
     family_sample_bam_tuple_channel
                                     .groupTuple()
                                     .branch {
@@ -477,10 +514,8 @@ workflow {
                                         }
                                         .set { large_family_samples}
     large_family_trios = large_family_samples.father.join(large_family_samples.mother).combine(large_family_samples.child, by: 0).map { it -> tuple( it[0], [ it[1], it[4], it[7] ], [ it[2], it[5], it[8] ], [ it[3], it[6], it[9] ] ) }
-
     // For phasing, if we're in joint-called SNV VCF mode, then we have to subset the VCF. Otherwise, we can skip the SUBSET_VCF process and find the family VCF corresponding to this particular family.
     // But, if we're phasing a large family, we need to subset the VCF regardless if it is joint-called or family VCF because it's too big no matter what.
-    
     // Focus on standard families
     if (params.cohort_vcf) {
         cohort_vcf_tbi = file("${params.cohort_vcf}.tbi", checkIfExists: true)
@@ -492,10 +527,8 @@ workflow {
                                             .fromPath(params.family_vcfs, type: "file", checkIfExists: true)
                                             .splitCsv(sep: "\t", header: ["family_name", "family_vcf_file_path"])
                                             .map { row -> tuple(row.family_name, row.family_vcf_file_path) }
-
         standard_subsetted_family_tuples = families_to_be_phased.standard_families.join(family_vcf_tuple_channel)
         // Still need to use SUBSET_VCF for the large families, but not sure how... (need to test this part).
-       
         large_family_trios
                                                         .join(family_vcf_tuple_channel)
                                                         .multiMap { it ->
@@ -503,17 +536,15 @@ workflow {
                                                                     vcf_channel: it[-1]
                                                                   } 
                                                         .set { large_family_trios_with_vcf }
-        
         subsetted_large_family_trios_tuples = SUBSET_VCF( large_family_trios_with_vcf.bam_channel, large_family_trios_with_vcf.vcf_channel  )
+        subsetted_family_tuples = subsetted_large_family_trios_tuples.mix( standard_subsetted_family_tuples )
     }
     else {
         log.info "Specify one of the following parameters: cohort_vcf or family_vcfs"
         exit(0)
     }
-    // TESTING //
-    exit(0)
-
     subsetted_indexed_family_tuples = INDEX_VCF( subsetted_family_tuples )
+
     // Phasing
     phased_family_tuples = PHASE( subsetted_indexed_family_tuples)
     phased_family_tuples
@@ -528,17 +559,15 @@ workflow {
     merged_families = MERGE_FAMILY_VCFS( families_to_merge_and_standard_families.families_to_merge )
     all_phased_families_tuple_with_index = families_to_merge_and_standard_families.standard_families.transpose().mix(merged_families)
 
-//
-//    // Haplotag each sample's BAM using its phased family VCF 
-//    haplotag_bam_tuple = INDEX_BAM2( HAPLOTAG( family_sample_bam_tuple_channel.combine( all_phased_families_tuple_with_index, by: 0 ) ) )
-//
-//    // Run variant callers
-//    cutesv_tuple = POSTPROCESS_CUTESV( CUTESV(haplotag_bam_tuple) )
-//    sniffles_tuple = POSTPROCESS_SNIFFLES( SNIFFLES(haplotag_bam_tuple) )
-//    svim_tuple = POSTPROCESS_SVIM( SVIM(haplotag_bam_tuple) )
-//    pbsv_tuple = POSTPROCESS_PBSV( PBSV(haplotag_bam_tuple) )
-//
-//    // Merge variant calls (within each sample) using Jasmine
-//    jasmine_vcf_tuple = JASMINE( haplotag_bam_tuple.join( sniffles_tuple ).join( cutesv_tuple ).join( pbsv_tuple ).join( svim_tuple ) )
+    // Haplotag each sample's BAM using its phased family VCF 
+    haplotag_bam_tuple = INDEX_BAM2( HAPLOTAG( family_sample_bam_tuple_channel.combine( all_phased_families_tuple_with_index, by: 0 ) ) )
 
+    // Run variant callers
+    cutesv_tuple = POSTPROCESS_CUTESV( CUTESV(haplotag_bam_tuple) )
+    sniffles_tuple = POSTPROCESS_SNIFFLES( SNIFFLES(haplotag_bam_tuple) )
+    svim_tuple = POSTPROCESS_SVIM( SVIM(haplotag_bam_tuple) )
+    pbsv_tuple = POSTPROCESS_PBSV( PBSV(haplotag_bam_tuple) )
+
+    // Merge variant calls (within each sample) using Jasmine
+    jasmine_vcf_tuple = POSTPROCESS_JASMINE( JASMINE( haplotag_bam_tuple.join( sniffles_tuple ).join( cutesv_tuple ).join( pbsv_tuple ).join( svim_tuple ) ) )
 }
