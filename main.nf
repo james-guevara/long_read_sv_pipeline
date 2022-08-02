@@ -369,79 +369,79 @@ process POSTPROCESS_SVIM {
     """
 }
 
-process PBSV {
-    publishDir "results/$sample_name", mode: "copy"
+// process PBSV {
+//     publishDir "results/$sample_name", mode: "copy"
+// 
+//     input:
+//     tuple val(sample_name), path(bam), path(bai)
+//     output:
+//     tuple val(sample_name), path("${sample_name}.pbsv.vcf")
+//  
+//     script:
+//     if (params.sequencing_mode == "ccs_hifi" || params.sequencing_mode == "ccs_subread_fallback")
+//     """
+//     pbsv discover --sample $sample_name --tandem-repeats ${params.tandem_repeats_bed} $bam ${sample_name}.svsig.gz
+//     pbsv call --ccs --call-min-reads-one-sample 1 ${params.reference_fasta} ${sample_name}.svsig.gz ${sample_name}.pbsv.vcf
+//     """
+//     else
+//     """
+//     pbsv discover --sample $sample_name --tandem-repeats ${params.tandem_repeats_bed} $bam ${sample_name}.svsig.gz
+//     pbsv call --call-min-reads-one-sample 1 ${params.reference_fasta} ${sample_name}.svsig.gz ${sample_name}.pbsv.vcf
+//     """
+// 
+//     stub:
+//     """
+//     touch ${sample_name}.pbsv.vcf
+//     """
+// }
 
-    input:
-    tuple val(sample_name), path(bam), path(bai)
-    output:
-    tuple val(sample_name), path("${sample_name}.pbsv.vcf")
- 
-    script:
-    if (params.sequencing_mode == "ccs_hifi" || params.sequencing_mode == "ccs_subread_fallback")
-    """
-    pbsv discover --sample $sample_name --tandem-repeats ${params.tandem_repeats_bed} $bam ${sample_name}.svsig.gz
-    pbsv call --ccs --call-min-reads-one-sample 1 ${params.reference_fasta} ${sample_name}.svsig.gz ${sample_name}.pbsv.vcf
-    """
-    else
-    """
-    pbsv discover --sample $sample_name --tandem-repeats ${params.tandem_repeats_bed} $bam ${sample_name}.svsig.gz
-    pbsv call --call-min-reads-one-sample 1 ${params.reference_fasta} ${sample_name}.svsig.gz ${sample_name}.pbsv.vcf
-    """
-
-    stub:
-    """
-    touch ${sample_name}.pbsv.vcf
-    """
-}
-
-process POSTPROCESS_PBSV {
-    input:
-    tuple val(sample_name), path(vcf, stageAs: "input.vcf")
-    output:
-    tuple val(sample_name), path("${sample_name}.pbsv.vcf")
-
-    shell:
-    '''
-    mkdir tmp
-    header1='##FORMAT=<ID=DR,Number=1,Type=Integer,Description="# high-quality reference reads">'
-    header2='##FORMAT=<ID=DV,Number=1,Type=Integer,Description="# high-quality variant reads">'
-
-    cat <(bcftools view -h !{vcf} | head -n -1) \
-    <(echo -e $header1) <(echo -e $header2) \
-    <(bcftools view -h !{vcf} | tail -n 1) \
-    <(bcftools view -H !{vcf} | \
-    awk 'BEGIN{FS="\t";OFS="\t"} \
-    { \
-        split($NF,p,":"); \
-        AD = p[2]; \
-        split(AD, p_ad, ","); \
-        DR = p_ad[1]; \
-        DV = p_ad[2]; \
-        $(NF-1) = $(NF-1)":DR:DV"; \
-        $NF = $NF":"DR":"DV; \
-        print $0; \
-    }') | bcftools sort --temp-dir tmp -o !{sample_name}.pbsv.vcf
-    '''
-
-    stub:
-    """
-    touch ${sample_name}.pbsv.vcf
-    """
-}
+// process POSTPROCESS_PBSV {
+//     input:
+//     tuple val(sample_name), path(vcf, stageAs: "input.vcf")
+//     output:
+//     tuple val(sample_name), path("${sample_name}.pbsv.vcf")
+// 
+//     shell:
+//     '''
+//     mkdir tmp
+//     header1='##FORMAT=<ID=DR,Number=1,Type=Integer,Description="# high-quality reference reads">'
+//     header2='##FORMAT=<ID=DV,Number=1,Type=Integer,Description="# high-quality variant reads">'
+// 
+//     cat <(bcftools view -h !{vcf} | head -n -1) \
+//     <(echo -e $header1) <(echo -e $header2) \
+//     <(bcftools view -h !{vcf} | tail -n 1) \
+//     <(bcftools view -H !{vcf} | \
+//     awk 'BEGIN{FS="\t";OFS="\t"} \
+//     { \
+//         split($NF,p,":"); \
+//         AD = p[2]; \
+//         split(AD, p_ad, ","); \
+//         DR = p_ad[1]; \
+//         DV = p_ad[2]; \
+//         $(NF-1) = $(NF-1)":DR:DV"; \
+//         $NF = $NF":"DR":"DV; \
+//         print $0; \
+//     }') | bcftools sort --temp-dir tmp -o !{sample_name}.pbsv.vcf
+//     '''
+// 
+//     stub:
+//     """
+//     touch ${sample_name}.pbsv.vcf
+//     """
+// }
 
 process JASMINE {
     publishDir "results/$sample_name", mode: "copy", pattern: "*.merged.vcf"
 
     input:
-    tuple val(sample_name), path(bam), path(bai), path(sniffles_vcf), path(cutesv_vcf), path(pbsv_vcf), path(svim_vcf)
+    tuple val(sample_name), path(bam), path(bai), path(sniffles_vcf), path(cutesv_vcf), path(svim_vcf)
     output:
-    tuple val(sample_name), path("${sample_name}.merged.vcf"), path(sniffles_vcf), path(cutesv_vcf), path(pbsv_vcf), path(svim_vcf)
+    tuple val(sample_name), path("${sample_name}.merged.vcf"), path(sniffles_vcf), path(cutesv_vcf), path(svim_vcf)
  
     shell:
     '''
-    echo "!{bam.name}\n!{bam.name}\n!{bam.name}\n!{bam.name}" > bam_files.txt
-    echo "!{sniffles_vcf.name}\n!{cutesv_vcf.name}\n!{pbsv_vcf.name}\n!{svim_vcf.name}" > vcf_files.txt
+    echo "!{bam.name}\n!{bam.name}\n!{bam.name}" > bam_files.txt
+    echo "!{sniffles_vcf.name}\n!{cutesv_vcf.name}\n!{svim_vcf.name}" > vcf_files.txt
     mkdir tmp
     jasmine file_list=vcf_files.txt out_file=!{sample_name}.merged.vcf genome_file=!{params.reference_fasta} bam_list=bam_files.txt out_dir=tmp --output_genotypes --dup_to_ins --normalize_type --ignore_strand threads=!{task.cpus} --run_iris iris_args=--keep_long_variants,threads=!{task.cpus}
     '''
@@ -456,7 +456,7 @@ process POSTPROCESS_JASMINE {
     publishDir "results/$sample_name", mode: "copy"
 
     input:
-    tuple val(sample_name), path(jasmine_vcf, stageAs: "input.vcf"), path(sniffles_vcf), path(cutesv_vcf), path(pbsv_vcf), path(svim_vcf)
+    tuple val(sample_name), path(jasmine_vcf, stageAs: "input.vcf"), path(sniffles_vcf), path(cutesv_vcf), path(svim_vcf)
     output:
     tuple val(sample_name), path("${sample_name}.merged.vcf.gz"), path("${sample_name}.merged.vcf.gz.tbi")
 
