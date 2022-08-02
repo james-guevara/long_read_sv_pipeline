@@ -79,9 +79,13 @@ process INDEX_BAM {
     """
 }
 
-process COVERAGE { 
+process COVERAGE {
+    publishDir "results/$sample_name", mode: "copy"
+
     input:
     tuple val(sample_name), path(bam), path(bai)
+    output:
+    tuple path("${sample_name}.mosdepth.global.dist.txt"), path("${sample_name}.mosdepth.summary.txt")
 
     script:
     """
@@ -186,6 +190,8 @@ process HAPLOTAG {
 }
 
 process INDEX_BAM2 {
+    publishDir "results/$sample_name", mode: "copy"
+
     input:
     tuple val(sample_name), path(bam)
     output:
@@ -203,6 +209,8 @@ process INDEX_BAM2 {
 }
 
 process CUTESV {
+    publishDir "results/$sample_name", mode: "copy"
+
     input:
     tuple val(sample_name), path(bam), path(bai)
     output:
@@ -245,6 +253,8 @@ process POSTPROCESS_CUTESV {
 }
 
 process SNIFFLES {
+    publishDir "results/$sample_name", mode: "copy"
+
     input:
     tuple val(sample_name), path(bam), path(bai)
     output:
@@ -269,6 +279,7 @@ process POSTPROCESS_SNIFFLES {
 
     shell:
     '''
+    mkdir tmp
     if grep -Fq STRANDBIAS !{vcf}; then
         awk 'BEGIN{FS="\t";OFS="\t"} \
         { \
@@ -278,10 +289,10 @@ process POSTPROCESS_SNIFFLES {
             print $0; \
         }' !{vcf} | \
         bcftools reheader -s <(echo !{sample_name}) | \
-        bcftools sort -o !{sample_name}.sniffles.vcf 
+        bcftools sort --temp-dir tmp -o !{sample_name}.sniffles.vcf 
     else
         bcftools reheader -s <(echo !{sample_name}) !{vcf} | \
-        bcftools sort -o !{sample_name}.sniffles.vcf
+        bcftools sort --temp-dir tmp -o !{sample_name}.sniffles.vcf
     fi
     '''
 
@@ -292,6 +303,8 @@ process POSTPROCESS_SNIFFLES {
 }
 
 process SVIM {
+    publishDir "results/$sample_name", mode: "copy"
+
     input:
     tuple val(sample_name), path(bam), path(bai)
     output:
@@ -317,6 +330,7 @@ process POSTPROCESS_SVIM {
 
     shell:
     '''
+    mkdir tmp
     awk 'BEGIN{FS="\t";OFS="\t"} \
         { \
             if ($1=="#CHROM") { \
@@ -346,7 +360,7 @@ process POSTPROCESS_SVIM {
             print $0; \
         }' !{vcf} | \
      bcftools view -i 'SVTYPE=="DEL" || SVTYPE=="INS" || SVTYPE=="DUP" || SVTYPE=="INV" || SVTYPE=="BND"' | \
-     bcftools view -i 'SUPPORT>=1' | bcftools sort -o !{sample_name}.svim.vcf
+     bcftools view -i 'SUPPORT>=1' | bcftools sort --temp-dir tmp -o !{sample_name}.svim.vcf
     '''
 
     stub:
@@ -356,6 +370,8 @@ process POSTPROCESS_SVIM {
 }
 
 process PBSV {
+    publishDir "results/$sample_name", mode: "copy"
+
     input:
     tuple val(sample_name), path(bam), path(bai)
     output:
@@ -387,6 +403,7 @@ process POSTPROCESS_PBSV {
 
     shell:
     '''
+    mkdir tmp
     header1='##FORMAT=<ID=DR,Number=1,Type=Integer,Description="# high-quality reference reads">'
     header2='##FORMAT=<ID=DV,Number=1,Type=Integer,Description="# high-quality variant reads">'
 
@@ -404,7 +421,7 @@ process POSTPROCESS_PBSV {
         $(NF-1) = $(NF-1)":DR:DV"; \
         $NF = $NF":"DR":"DV; \
         print $0; \
-    }') | bcftools sort -o !{sample_name}.pbsv.vcf
+    }') | bcftools sort --temp-dir tmp -o !{sample_name}.pbsv.vcf
     '''
 
     stub:
@@ -414,6 +431,8 @@ process POSTPROCESS_PBSV {
 }
 
 process JASMINE {
+    publishDir "results/$sample_name", mode: "copy", pattern: "*.merged.vcf"
+
     input:
     tuple val(sample_name), path(bam), path(bai), path(sniffles_vcf), path(cutesv_vcf), path(pbsv_vcf), path(svim_vcf)
     output:
@@ -434,35 +453,42 @@ process JASMINE {
 }
 
 process POSTPROCESS_JASMINE {
+    publishDir "results/$sample_name", mode: "copy"
+
     input:
     tuple val(sample_name), path(jasmine_vcf, stageAs: "input.vcf"), path(sniffles_vcf), path(cutesv_vcf), path(pbsv_vcf), path(svim_vcf)
     output:
-    tuple val(sample_name), path("${sample_name}.merged.vcf.gz"), path("${sample_name}.merged.vcf.gz")
+    tuple val(sample_name), path("${sample_name}.merged.vcf.gz"), path("${sample_name}.merged.vcf.gz.tbi")
 
     shell:
     '''
-    #!/bin/bash
+    mkdir tmp
 
-    HEADER_KEYS_CSV="ID=CIPOS ID=CILEN ID=q5 ID=STRAND"
+    HEADER_KEYS_CUTESV="ID=CIPOS ID=CILEN ID=q5 ID=STRAND ID=RE"
     HEADER_KEYS_PBSV="ID=SVANN ID=MATEID ID=MATEDIST ID=NearReferenceGap ID=NearContigEnd ID=Decoy ID=InsufficientStrandEvidence"
-    HEADER_KEYS_SVIM="ID=SUPPORT ID=STD_SPAN ID=STD_POS ID=STD_POS1 ID=STD_POS2 ID=SEQS ID=hom_ref ID=ZMWS ID=not_fully_covered"
+    # HEADER_KEYS_SVIM="ID=SUPPORT ID=STD_SPAN ID=STD_POS ID=STD_POS1 ID=STD_POS2 ID=SEQS ID=hom_ref ID=ZMWS ID=not_fully_covered"
+    HEADER_KEYS_SVIM="ID=SUPPORT ID=STD_SPAN ID=STD_POS ID=STD_POS1 ID=STD_POS2 ID=hom_ref ID=ZMWS ID=not_fully_covered"
 
     vcf_temp=temp.vcf
 
     bcftools view -h !{jasmine_vcf} | head -n -1 > $vcf_temp
-    for key in $HEADER_KEYS_CSV; do
+
+    for key in $HEADER_KEYS_CUTESV; do
         bcftools view -h !{cutesv_vcf} | grep -w $key >> $vcf_temp
     done
+
     for key in $HEADER_KEYS_PBSV; do
         bcftools view -h !{pbsv_vcf} | grep -w $key >> $vcf_temp
     done
+
     for key in $HEADER_KEYS_SVIM; do
         bcftools view -h !{svim_vcf} | grep -w $key >> $vcf_temp
     done
+
     bcftools view -h !{jasmine_vcf} | tail -n 1 >> $vcf_temp
     bcftools view -H !{jasmine_vcf} >> $vcf_temp
 
-    bcftools sort $vcf_temp | bgzip > !{sample_name}.merged.vcf.gz
+    bcftools sort --temp-dir tmp $vcf_temp | bgzip > !{sample_name}.merged.vcf.gz
     tabix !{sample_name}.merged.vcf.gz
     '''
 
@@ -473,7 +499,39 @@ process POSTPROCESS_JASMINE {
     """
 }
 
+process SAVE_PHASED_VCFS {
+    publishDir "results/$family_name", mode: "copy"
+    input:
+    tuple val(family_name), path(vcf), path(vcf_tbi)
+    output:
+    tuple val(family_name), path(vcf), path(vcf_tbi)
+
+    script:
+    """
+    """
+}
+
+def make_pedigree_dictionary (pedigree_filepath) {
+    pedigree_table = new File(pedigree_filepath).readLines().collect{ it.tokenize("\t") }
+    pedigree_dictionary = [:]
+    pedigree_table.each{ item ->
+        if (item[2] == "0" && item[3] == "0" && item[4] == "1") {
+            pedigree_dictionary[item[1]] = "Father"
+        }
+        else if (item[2] == "0" && item[3] == "0" && item[4] == "2") {
+            pedigree_dictionary[item[1]] = "Mother"
+        }
+        else {
+            pedigree_dictionary[item[1]] = "Child"
+        }
+    }
+    return pedigree_dictionary 
+}
+
+
 workflow {
+    pedigree_dictionary = make_pedigree_dictionary(params.pedigree_file)
+
     // Create channel for sample_fastq_tuples. Each tuple is of the form: (sample_name, fastq_file_path).
     sample_fastq_tuple_channel = Channel
                                         .fromPath(params.sample_fastq_table_tsv, type: "file", checkIfExists: true)
@@ -558,6 +616,8 @@ workflow {
     // Merging the large family trio VCFs (and then use the mix operator to put all the family VCFs into one channel, all_phased_families_tuple) 
     merged_families = MERGE_FAMILY_VCFS( families_to_merge_and_standard_families.families_to_merge )
     all_phased_families_tuple_with_index = families_to_merge_and_standard_families.standard_families.transpose().mix(merged_families)
+
+    SAVE_PHASED_VCFS( all_phased_families_tuple_with_index)
 
     // Haplotag each sample's BAM using its phased family VCF 
     haplotag_bam_tuple = INDEX_BAM2( HAPLOTAG( family_sample_bam_tuple_channel.combine( all_phased_families_tuple_with_index, by: 0 ) ) )
