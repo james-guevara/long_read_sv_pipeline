@@ -5,26 +5,24 @@ if (params.help) {
     Long-read structural variation pipeline (mapping, variant calling, genotyping)
     ============================
     Required:
-    --sample_fastq_table    Tab-delimited file, where the first column corresponds to the sample name and the second column corresponds to the file path of the fastq reads input.
-    --reference_fasta       Reference genome to which the reads are aligned.
-    --pedigree_file         Pedigree file (.fam, .ped, or .psam) containing all the samples in the cohort.
-    --sequencing_mode       The sequencing technology used to generate the input reads. Must be one of: ccs_hifi, ccs_subread_fallback, or ont
-    --tandem_repeats_bed    File path of tandem repeats bed file (used for Sniffles and ...).
+    --sample_fastq_table_tsv    Tab-delimited file, where the first column corresponds to the sample name and the second column corresponds to the file path of the fastq reads input.
+    --reference_fasta           Reference genome to which the reads are aligned.
+    --pedigree_file             Pedigree file (.fam, .ped, or .psam) containing all the samples in the cohort.
+    --sequencing_mode           The sequencing technology used to generate the input reads. Must be one of: ccs_hifi, ccs_subread_fallback, or ont
+    --tandem_repeats_bed        File path of tandem repeats bed file (used for Sniffles and ...).
 
     One of these modes are required for phasing:
-    --cohort_vcf            File path of the cohort VCF (that contains all the samples in the cohort).
-    --family_vcfs           Tab-delimited file, where the first column corresponds to the family names and the second column corresponds to the family VCF filepath.
+    --cohort_vcf                File path of the cohort VCF (that contains all the samples in the cohort).
+    --family_vcfs               Tab-delimited file, where the first column corresponds to the family names and the second column corresponds to the family VCF filepath.
     """.stripIndent()
     exit 0
 }
 
 params.reference_fasta = file("resources/Homo_sapiens_assembly38.fasta", type: "file", checkIfExists: true)
 params.reference_fasta_fai = file("${params.reference_fasta}.fai", type: "file", checkIfExists: true)
-
 params.sample_fastq_table_tsv = file("testing_data/sample_files_Ashkenazi_tests.tsv", type: "file", checkIfExists: true)
 params.pedigree_file = file("testing_data/AshkenazimTrio.ped", type: "file", checkIfExists: true)
-
-params.sequencing_mode = "ccs_hifi"
+params.sequencing_mode = ""
 sequencing_modes = ["ccs_hifi", "ccs_subread_fallback", "ont"]
 if (sequencing_modes.contains(params.sequencing_mode) == false) {
     log.info "Sequencing mode parameter must be one of: ccs_hifi, ccs_subread_fallback, or ont"
@@ -32,9 +30,21 @@ if (sequencing_modes.contains(params.sequencing_mode) == false) {
 }
 params.tandem_repeats_bed =  file("resources/human_GRCh38_no_alt_analysis_set.trf.bed", type: "file", checkIfExists: true)
 
+
 // Choose between these 2 types of files
 params.cohort_vcf = ""
 params.family_vcfs = ""
+
+log.info """
+Running with parameters:
+--sample_fastq_table_tsv : ${params.sample_fastq_table_tsv}
+--reference_fasta : ${params.reference_fasta}
+--pedigree_file : ${params.pedigree_file}
+--sequencing_mode : ${params.sequencing_mode}
+--tandem_repeats_bed : ${params.tandem_repeats_bed}
+--cohort_vcf : ${params.cohort_vcf}
+--family_vcfs : ${params.family_vcfs}
+""".stripIndent()
 
 process MAP {
     input: 
@@ -45,7 +55,7 @@ process MAP {
     script:
     if (params.sequencing_mode == "ccs_hifi") 
     """ 
-    minimap2 -t ${task.cpus} -o ${sample_name}.sam -a -x map-hifi --MD -Y -R '@RG\\tID:${sample_name}\\tSM:${sample_name}'  ${params.reference_fasta} $fastq_gz | samtools sort --reference ${params.reference_fasta} --threads ${task.cpus} --output-fmt BAM -o ${sample_name}.bam
+    minimap2 -t ${task.cpus} -a -x map-hifi --MD -Y -R '@RG\\tID:${sample_name}\\tSM:${sample_name}'  ${params.reference_fasta} $fastq_gz | samtools sort --reference ${params.reference_fasta} --threads ${task.cpus} --output-fmt BAM -o ${sample_name}.bam
     """
     else if (params.sequencing_mode == "ccs_subread_fallback") // I might have to change the -Q parameter (though I don't see it in the most recent version of minimap2)
     """
@@ -369,66 +379,66 @@ process POSTPROCESS_SVIM {
     """
 }
 
-// process PBSV {
-//     publishDir "results/$sample_name", mode: "copy"
-// 
-//     input:
-//     tuple val(sample_name), path(bam), path(bai)
-//     output:
-//     tuple val(sample_name), path("${sample_name}.pbsv.vcf")
-//  
-//     script:
-//     if (params.sequencing_mode == "ccs_hifi" || params.sequencing_mode == "ccs_subread_fallback")
-//     """
-//     pbsv discover --sample $sample_name --tandem-repeats ${params.tandem_repeats_bed} $bam ${sample_name}.svsig.gz
-//     pbsv call --ccs --call-min-reads-one-sample 1 ${params.reference_fasta} ${sample_name}.svsig.gz ${sample_name}.pbsv.vcf
-//     """
-//     else
-//     """
-//     pbsv discover --sample $sample_name --tandem-repeats ${params.tandem_repeats_bed} $bam ${sample_name}.svsig.gz
-//     pbsv call --call-min-reads-one-sample 1 ${params.reference_fasta} ${sample_name}.svsig.gz ${sample_name}.pbsv.vcf
-//     """
-// 
-//     stub:
-//     """
-//     touch ${sample_name}.pbsv.vcf
-//     """
-// }
+process PBSV {
+    publishDir "results/$sample_name", mode: "copy"
 
-// process POSTPROCESS_PBSV {
-//     input:
-//     tuple val(sample_name), path(vcf, stageAs: "input.vcf")
-//     output:
-//     tuple val(sample_name), path("${sample_name}.pbsv.vcf")
-// 
-//     shell:
-//     '''
-//     mkdir tmp
-//     header1='##FORMAT=<ID=DR,Number=1,Type=Integer,Description="# high-quality reference reads">'
-//     header2='##FORMAT=<ID=DV,Number=1,Type=Integer,Description="# high-quality variant reads">'
-// 
-//     cat <(bcftools view -h !{vcf} | head -n -1) \
-//     <(echo -e $header1) <(echo -e $header2) \
-//     <(bcftools view -h !{vcf} | tail -n 1) \
-//     <(bcftools view -H !{vcf} | \
-//     awk 'BEGIN{FS="\t";OFS="\t"} \
-//     { \
-//         split($NF,p,":"); \
-//         AD = p[2]; \
-//         split(AD, p_ad, ","); \
-//         DR = p_ad[1]; \
-//         DV = p_ad[2]; \
-//         $(NF-1) = $(NF-1)":DR:DV"; \
-//         $NF = $NF":"DR":"DV; \
-//         print $0; \
-//     }') | bcftools sort --temp-dir tmp -o !{sample_name}.pbsv.vcf
-//     '''
-// 
-//     stub:
-//     """
-//     touch ${sample_name}.pbsv.vcf
-//     """
-// }
+    input:
+    tuple val(sample_name), path(bam), path(bai)
+    output:
+    tuple val(sample_name), path("${sample_name}.pbsv.vcf")
+ 
+    script:
+    if (params.sequencing_mode == "ccs_hifi" || params.sequencing_mode == "ccs_subread_fallback")
+    """
+    pbsv discover --sample $sample_name --tandem-repeats ${params.tandem_repeats_bed} $bam ${sample_name}.svsig.gz
+    pbsv call --ccs --call-min-reads-one-sample 1 ${params.reference_fasta} ${sample_name}.svsig.gz ${sample_name}.pbsv.vcf
+    """
+    else
+    """
+    pbsv discover --sample $sample_name --tandem-repeats ${params.tandem_repeats_bed} $bam ${sample_name}.svsig.gz
+    pbsv call --call-min-reads-one-sample 1 ${params.reference_fasta} ${sample_name}.svsig.gz ${sample_name}.pbsv.vcf
+    """
+
+    stub:
+    """
+    touch ${sample_name}.pbsv.vcf
+    """
+}
+
+process POSTPROCESS_PBSV {
+    input:
+    tuple val(sample_name), path(vcf, stageAs: "input.vcf")
+    output:
+    tuple val(sample_name), path("${sample_name}.pbsv.vcf")
+
+    shell:
+    '''
+    mkdir tmp
+    header1='##FORMAT=<ID=DR,Number=1,Type=Integer,Description="# high-quality reference reads">'
+    header2='##FORMAT=<ID=DV,Number=1,Type=Integer,Description="# high-quality variant reads">'
+
+    cat <(bcftools view -h !{vcf} | head -n -1) \
+    <(echo -e $header1) <(echo -e $header2) \
+    <(bcftools view -h !{vcf} | tail -n 1) \
+    <(bcftools view -H !{vcf} | \
+    awk 'BEGIN{FS="\t";OFS="\t"} \
+    { \
+        split($NF,p,":"); \
+        AD = p[2]; \
+        split(AD, p_ad, ","); \
+        DR = p_ad[1]; \
+        DV = p_ad[2]; \
+        $(NF-1) = $(NF-1)":DR:DV"; \
+        $NF = $NF":"DR":"DV; \
+        print $0; \
+    }') | bcftools sort --temp-dir tmp -o !{sample_name}.pbsv.vcf
+    '''
+
+    stub:
+    """
+    touch ${sample_name}.pbsv.vcf
+    """
+}
 
 process JASMINE {
     publishDir "results/$sample_name", mode: "copy", pattern: "*.merged.vcf"
@@ -465,8 +475,6 @@ process POSTPROCESS_JASMINE {
     mkdir tmp
 
     HEADER_KEYS_CUTESV="ID=CIPOS ID=CILEN ID=q5 ID=STRAND ID=RE"
-    HEADER_KEYS_PBSV="ID=SVANN ID=MATEID ID=MATEDIST ID=NearReferenceGap ID=NearContigEnd ID=Decoy ID=InsufficientStrandEvidence"
-    # HEADER_KEYS_SVIM="ID=SUPPORT ID=STD_SPAN ID=STD_POS ID=STD_POS1 ID=STD_POS2 ID=SEQS ID=hom_ref ID=ZMWS ID=not_fully_covered"
     HEADER_KEYS_SVIM="ID=SUPPORT ID=STD_SPAN ID=STD_POS ID=STD_POS1 ID=STD_POS2 ID=hom_ref ID=ZMWS ID=not_fully_covered"
 
     vcf_temp=temp.vcf
@@ -475,10 +483,6 @@ process POSTPROCESS_JASMINE {
 
     for key in $HEADER_KEYS_CUTESV; do
         bcftools view -h !{cutesv_vcf} | grep -w $key >> $vcf_temp
-    done
-
-    for key in $HEADER_KEYS_PBSV; do
-        bcftools view -h !{pbsv_vcf} | grep -w $key >> $vcf_temp
     done
 
     for key in $HEADER_KEYS_SVIM; do
@@ -544,12 +548,13 @@ workflow {
 
     // Get coverage using mosdepth
     COVERAGE(sample_bam_tuple_channel)
-
+    sample_bam_tuple_channel.view()
     // Phasing step uses pedigree structure.
     pedigree_tuple_channel = Channel
                                     .fromPath(params.pedigree_file, type: "file", checkIfExists: true)
                                     .splitCsv(sep: "\t", header: ["family_name", "sample_name", "father_name", "mother_name", "sex", "phenotype"])
                                     .map { row -> tuple(row.sample_name, row.family_name) }
+
 
     // Join the sample bam tuples with their family names, and then group samples by family (the output tuples will look like this: [ family_name, [sample_name_0, sample_name_1, sample_name_2], [bam_0, bam_1, bam_2], [bai_0, bai_1, bai_2] ]
     family_sample_bam_tuple_channel = sample_bam_tuple_channel
@@ -562,6 +567,7 @@ workflow {
                                         standard_families: true
                                     }
                                     .set { families_to_be_phased } 
+
     // Deal with large families (too large to phased together) by splitting them up into trios (and they will be merged after phasing).
     families_to_be_phased.large_families
                                         .transpose()
@@ -626,8 +632,8 @@ workflow {
     cutesv_tuple = POSTPROCESS_CUTESV( CUTESV(haplotag_bam_tuple) )
     sniffles_tuple = POSTPROCESS_SNIFFLES( SNIFFLES(haplotag_bam_tuple) )
     svim_tuple = POSTPROCESS_SVIM( SVIM(haplotag_bam_tuple) )
-    pbsv_tuple = POSTPROCESS_PBSV( PBSV(haplotag_bam_tuple) )
+    // pbsv_tuple = POSTPROCESS_PBSV( PBSV(haplotag_bam_tuple) )
 
     // Merge variant calls (within each sample) using Jasmine
-    jasmine_vcf_tuple = POSTPROCESS_JASMINE( JASMINE( haplotag_bam_tuple.join( sniffles_tuple ).join( cutesv_tuple ).join( pbsv_tuple ).join( svim_tuple ) ) )
+    jasmine_vcf_tuple = POSTPROCESS_JASMINE( JASMINE( haplotag_bam_tuple.join( sniffles_tuple ).join( cutesv_tuple ).join( svim_tuple ) ) )
 }
