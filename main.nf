@@ -30,10 +30,16 @@ if (sequencing_modes.contains(params.sequencing_mode) == false) {
 }
 params.tandem_repeats_bed =  file("resources/human_GRCh38_no_alt_analysis_set.trf.bed", type: "file", checkIfExists: true)
 
+params.TR_file_TRF_target = file("/home/smmortazavi/HUMAN_DATA/REF/REPEATS/Simple_Repeats_TRF_annot.bed", type: "file", checkIfExists: true)
+params.TR_file_TRF_all =  file("/home/smmortazavi/HUMAN_DATA/REF/REPEATS/Simple_Repeats_TRF_annot.bed", type: "file", checkIfExists: true)
+params.TR_file_RM_Simpe =  file("/home/smmortazavi/HUMAN_DATA/REF/REPEATS/Repeats_Masker_Simple_repeat.bed", type: "file", checkIfExists: true)
+params.TR_file_MG =  file("/home/smmortazavi/HUMAN_DATA/REF/REPEATS/hg38_ver13.bed", type: "file", checkIfExists: true)
 
 // Choose between these 2 types of files
 params.cohort_vcf = ""
 params.family_vcfs = ""
+
+chromIndices = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
 
 log.info """
 Running with parameters:
@@ -495,13 +501,74 @@ process POSTPROCESS_JASMINE {
     bcftools sort --temp-dir tmp $vcf_temp | bgzip > !{sample_name}.merged.vcf.gz
     tabix !{sample_name}.merged.vcf.gz
     '''
-
+    // Remember to rename the samples in the VCF!
     stub:
     """
     touch ${sample_name}.merged.vcf.gz
     touch ${sample_name}.merged.vcf.gz.tbi
     """
 }
+
+process SPLIT_VCF_BY_CHROMOSOME {
+    input:
+    tuple val(sample_name), path(vcf), path(tbi)
+    output:
+    tuple val(sample_name), path("${sample_name}.chr*.vcf")
+
+    script:
+    """
+    for n in {1..22}; do
+        bcftools view --regions chr\$n $vcf > ${sample_name}.chr\$n.vcf
+    done
+    bcftools view --regions chrX $vcf > ${sample_name}.chrX.vcf
+    bcftools view --regions chrY $vcf > ${sample_name}.chrY.vcf
+    """
+}
+
+process GENOTYPE_NONTR {
+    input:
+    tuple val(sample_name), path(bam), path(bai), path(vcfs)
+    each chromIndex
+
+    script:
+    """
+    VCF_SAMPLE_NAME="\$(bcftools query -l ${vcfs[chromIndex]} | head -n +1)"
+    echo "\$VCF_SAMPLE_NAME\t${bam.name}" > sample_bam.txt
+    python3.8 /genSV/genotype.py nontr -v ${vcfs[chromIndex]} -o ${vcfs[chromIndex].baseName}.genotyped_nontr.vcf -s sample_bam.txt --TR_file_TRF_target ${params.TR_file_TRF_target} --TR_file_TRF_all ${params.TR_file_TRF_all} --TR_file_RM_Simpe ${params.TR_file_RM_Simpe} --TR_file_MG ${params.TR_file_MG}
+    """
+}
+
+process GENOTYPE_TR {
+    input:
+    tuple val(sample_name), path(bam), path(bai), path(vcfs)
+    each chromIndex
+
+    script:
+    """
+    VCF_SAMPLE_NAME="\$(bcftools query -l ${vcfs[chromIndex]} | head -n +1)"
+    echo "\$VCF_SAMPLE_NAME\t${bam.name}" > sample_bam.txt
+    python3 genotype.py tr -t ${params.tandem_repeats_bed} -v ${vcfs[chromIndex]} -o ${vcfs[chromIndex].baseName}.genotyped_tr.vcf -s sample_bam.txt
+    """
+}
+
+process MERGE_GENOTYPE_NONTR_VCFS {
+    input:
+    tuple val(sample_name), path(genotyped_nontr_vcfs)
+    script:
+    """
+    bcftools concat --output ${sample_name}.genotyped_nontr.vcf.gz --output-type z --threads ${task.cpus} $genotyped_nontr_vcfs
+    """
+}
+
+process MERGE_GENOTYPE_TR_VCFS {
+    input:
+    tuple val(sample_name), path(genotyped_tr_vcfs)
+    script:
+    """
+    bcftools concat --output ${sample_name}.genotyped_tr.vcf.gz --output-type z --threads ${task.cpus} $genotyped_tr_vcfs
+    """
+}
+
 
 process SAVE_PHASED_VCFS {
     publishDir "results/$family_name", mode: "copy"
@@ -636,4 +703,9 @@ workflow {
 
     // Merge variant calls (within each sample) using Jasmine
     jasmine_vcf_tuple = POSTPROCESS_JASMINE( JASMINE( haplotag_bam_tuple.join( sniffles_tuple ).join( cutesv_tuple ).join( svim_tuple ) ) )
+
+    // Split each sample's VCF by chromosome
+    split_vcfs_tuple = SPLIT_VCF_BY_CHROMOSOME(jasmine_vcf_tuple)
+
+    GENOTYPE_NONTR(haplotag_bam_tuple.join(split_vcfs_tuple), chromIndices)
 }
