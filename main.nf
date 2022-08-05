@@ -35,6 +35,7 @@ params.TR_file_TRF_all =  file("/home/smmortazavi/HUMAN_DATA/REF/REPEATS/Simple_
 params.TR_file_RM_Simpe =  file("/home/smmortazavi/HUMAN_DATA/REF/REPEATS/Repeats_Masker_Simple_repeat.bed", type: "file", checkIfExists: true)
 params.TR_file_MG =  file("/home/smmortazavi/HUMAN_DATA/REF/REPEATS/hg38_ver13.bed", type: "file", checkIfExists: true)
 
+
 // Choose between these 2 types of files
 params.cohort_vcf = ""
 params.family_vcfs = ""
@@ -530,6 +531,9 @@ process GENOTYPE_NONTR {
     tuple val(sample_name), path(bam), path(bai), path(vcfs)
     each chromIndex
 
+    output:
+    tuple val(sample_name), path("${vcfs[chromIndex].baseName}.genotyped_nontr.vcf")
+
     script:
     """
     VCF_SAMPLE_NAME="\$(bcftools query -l ${vcfs[chromIndex]} | head -n +1)"
@@ -543,11 +547,14 @@ process GENOTYPE_TR {
     tuple val(sample_name), path(bam), path(bai), path(vcfs)
     each chromIndex
 
+    output:
+    tuple val(sample_name), path("${vcfs[chromIndex].baseName}.genotyped_tr.vcf")
+
     script:
     """
     VCF_SAMPLE_NAME="\$(bcftools query -l ${vcfs[chromIndex]} | head -n +1)"
     echo "\$VCF_SAMPLE_NAME\t${bam.name}" > sample_bam.txt
-    python3 genotype.py tr -t ${params.tandem_repeats_bed} -v ${vcfs[chromIndex]} -o ${vcfs[chromIndex].baseName}.genotyped_tr.vcf -s sample_bam.txt
+    python3.8 /genSV/genotype.py tr -t ${params.TR_file_TRF_target} -v ${vcfs[chromIndex]} -o ${vcfs[chromIndex].baseName}.genotyped_tr.vcf -s sample_bam.txt
     """
 }
 
@@ -707,5 +714,8 @@ workflow {
     // Split each sample's VCF by chromosome
     split_vcfs_tuple = SPLIT_VCF_BY_CHROMOSOME(jasmine_vcf_tuple)
 
-    GENOTYPE_NONTR(haplotag_bam_tuple.join(split_vcfs_tuple), chromIndices)
+    // Genotyping variants (per chromosome)
+    sample_genotype_nontr_vcf_tuple = GENOTYPE_NONTR(haplotag_bam_tuple.join(split_vcfs_tuple), chromIndices)
+    sample_genotype_tr_vcf_tuple = GENOTYPE_TR(haplotag_bam_tuple.join(split_vcfs_tuple), chromIndices)
+
 }
