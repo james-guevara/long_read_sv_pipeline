@@ -29,13 +29,10 @@ if (sequencing_modes.contains(params.sequencing_mode) == false) {
     exit(0)
 }
 params.tandem_repeats_bed =  file("resources/human_GRCh38_no_alt_analysis_set.trf.bed", type: "file", checkIfExists: true)
-
 params.TR_file_TRF_target = file("/home/smmortazavi/HUMAN_DATA/REF/REPEATS/Simple_Repeats_TRF_annot.bed", type: "file", checkIfExists: true)
 params.TR_file_TRF_all =  file("/home/smmortazavi/HUMAN_DATA/REF/REPEATS/Simple_Repeats_TRF_annot.bed", type: "file", checkIfExists: true)
 params.TR_file_RM_Simpe =  file("/home/smmortazavi/HUMAN_DATA/REF/REPEATS/Repeats_Masker_Simple_repeat.bed", type: "file", checkIfExists: true)
 params.TR_file_MG =  file("/home/smmortazavi/HUMAN_DATA/REF/REPEATS/hg38_ver13.bed", type: "file", checkIfExists: true)
-
-
 // Choose between these 2 types of files
 params.cohort_vcf = ""
 params.family_vcfs = ""
@@ -298,18 +295,21 @@ process POSTPROCESS_SNIFFLES {
     '''
     mkdir tmp
     if grep -Fq STRANDBIAS !{vcf}; then
-        awk 'BEGIN{FS="\t";OFS="\t"} \
-        { \
-            if ($1=="#CHROM") { \
-                print("##FILTER=<ID=STRANDBIAS,Description=\\"Strand Bias\\">"); \
-            } \
-            print $0; \
-        }' !{vcf} | \
-        bcftools reheader -s <(echo !{sample_name}) | \
-        bcftools sort --temp-dir tmp -o !{sample_name}.sniffles.vcf 
+        awk '
+            BEGIN {
+                FS = "\t"
+                OFS = "\t"
+            }
+            {
+                if ($1 == "#CHROM") {
+                    print("##FILTER=<ID=STRANDBIAS,Description=\\"Strand Bias\\">");
+                }
+                print $0;
+            }
+            END {
+            }' !{vcf} | bcftools reheader -s <(echo !{sample_name}) | bcftools sort --temp-dir tmp --output !{sample_name}.sniffles.vcf 
     else
-        bcftools reheader -s <(echo !{sample_name}) !{vcf} | \
-        bcftools sort --temp-dir tmp -o !{sample_name}.sniffles.vcf
+        bcftools reheader --samples <(echo !{sample_name}) !{vcf} | bcftools sort --temp-dir tmp --output !{sample_name}.sniffles.vcf
     fi
     '''
 
@@ -479,30 +479,45 @@ process POSTPROCESS_JASMINE {
 
     shell:
     '''
-    mkdir tmp
-
     HEADER_KEYS_CUTESV="ID=CIPOS ID=CILEN ID=q5 ID=STRAND ID=RE"
     HEADER_KEYS_SVIM="ID=SUPPORT ID=STD_SPAN ID=STD_POS ID=STD_POS1 ID=STD_POS2 ID=hom_ref ID=ZMWS ID=not_fully_covered"
 
-    vcf_temp=temp.vcf
-
-    bcftools view -h !{jasmine_vcf} | head -n -1 > $vcf_temp
+    bcftools view --header-lines !{jasmine_vcf} | head -n -1 > vcf_header.txt
 
     for key in $HEADER_KEYS_CUTESV; do
-        bcftools view -h !{cutesv_vcf} | grep -w $key >> $vcf_temp
+        bcftools view --header-lines !{cutesv_vcf} | grep --word-regexp $key >> vcf_header.txt
     done
 
     for key in $HEADER_KEYS_SVIM; do
-        bcftools view -h !{svim_vcf} | grep -w $key >> $vcf_temp
+        bcftools view --header-lines !{svim_vcf} | grep --word-regexp $key >> vcf_header.txt
     done
 
-    bcftools view -h !{jasmine_vcf} | tail -n 1 >> $vcf_temp
-    bcftools view -H !{jasmine_vcf} >> $vcf_temp
+    bcftools view --header-lines !{jasmine_vcf} | tail -n 1 >> vcf_header.txt
 
-    bcftools sort --temp-dir tmp $vcf_temp | bgzip > !{sample_name}.merged.vcf.gz
+    bcftools view --no-header --exclude "INFO/SVLEN==0 && INFO/SVTYPE=='INV'" !{jasmine_vcf} > variants_minus_svim_invs.txt
+    bcftools view --no-header --include "INFO/SVLEN==0 && INFO/SVTYPE=='INV'" !{jasmine_vcf} > svim_invs.txt
+
+    awk '
+        BEGIN {
+            FS="\t"
+        }
+        {
+            TRUE_SVLEN = length($5)
+            # print SVLEN
+            gsub("SVLEN=0;", "SVLEN="TRUE_SVLEN";")
+            print
+        }
+        END {
+        }
+        ' svim_invs.txt > svim_invs_with_updated_svlens.txt
+
+    cat vcf_header.txt variants_minus_svim_invs.txt svim_invs_with_updated_svlens.txt > jasmine_merged_unsorted.vcf
+
+    mkdir tmp
+    bcftools sort --temp-dir tmp jasmine_merged_unsorted.vcf | bgzip > !{sample_name}.merged.vcf.gz
     tabix !{sample_name}.merged.vcf.gz
     '''
-    // Remember to rename the samples in the VCF!
+    // Remember to rename the samples in the VCF! (${sample_name}_cutesv, ${sample_name}_sniffles, etc.)
     stub:
     """
     touch ${sample_name}.merged.vcf.gz
@@ -561,21 +576,20 @@ process GENOTYPE_TR {
 process MERGE_GENOTYPE_NONTR_VCFS {
     input:
     tuple val(sample_name), path(genotyped_nontr_vcfs)
+    output:
+    path("${sample_name}.genotyped_nontr.vcf.gz")
+
     script:
     """
-    bcftools concat --output ${sample_name}.genotyped_nontr.vcf.gz --output-type z --threads ${task.cpus} $genotyped_nontr_vcfs
+    for n in {1..22}; do
+        echo "${sample_name}.chr\$n.genotyped_nontr.vcf" >> chromosome_file_names.txt
+    done
+    echo "${sample_name}.chrX.genotyped_nontr.vcf" >> chromosome_file_names.txt
+    echo "${sample_name}.chrY.genotyped_nontr.vcf" >> chromosome_file_names.txt
+
+    bcftools concat --output ${sample_name}.genotyped_nontr.vcf.gz --output-type z --threads ${task.cpus} --file-list chromosome_file_names.txt 
     """
 }
-
-process MERGE_GENOTYPE_TR_VCFS {
-    input:
-    tuple val(sample_name), path(genotyped_tr_vcfs)
-    script:
-    """
-    bcftools concat --output ${sample_name}.genotyped_tr.vcf.gz --output-type z --threads ${task.cpus} $genotyped_tr_vcfs
-    """
-}
-
 
 process SAVE_PHASED_VCFS {
     publishDir "results/$family_name", mode: "copy"
@@ -716,6 +730,12 @@ workflow {
 
     // Genotyping variants (per chromosome)
     sample_genotype_nontr_vcf_tuple = GENOTYPE_NONTR(haplotag_bam_tuple.join(split_vcfs_tuple), chromIndices)
-    sample_genotype_tr_vcf_tuple = GENOTYPE_TR(haplotag_bam_tuple.join(split_vcfs_tuple), chromIndices)
+    sample_genotype_tr_vcf_tuple = GENOTYPE_TR(haplotag_bam_tuple.join(split_vcfs_tuple), 1)
+    // Merging non-TR VCFs per sample
+    MERGE_GENOTYPE_NONTR_VCFS( sample_genotype_nontr_vcf_tuple.groupTuple() )
 
+    // To do:
+    // 1. awk and bash commands should be cleaner
+    // 2. Comment some code
+    // 3. Add code for PBSV (with or without)
 }
